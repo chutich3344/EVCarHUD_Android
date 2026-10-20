@@ -2,6 +2,7 @@ package com.kevin.evcarhud
 
 import android.content.Context
 import android.graphics.ImageFormat
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -73,6 +74,14 @@ class CameraSource(
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
 
+    // Hình xem trực tiếp qua GPU (TextureView): camera đẩy thẳng khung vào texture, CPU không phải đổi YUV -> RGB.
+    // Đặt trước open(); null = không dùng (app tự đổi YUV -> RGB bằng CPU như cũ).
+    var previewTexture: SurfaceTexture? = null
+    private var previewSurface: Surface? = null
+    // true khi phiên camera đang đẩy hình vào previewTexture
+    @Volatile var previewing = false
+        private set
+
     private var flip = false
     private var fpsRange: Range<Int>? = null
     private var aeRegion: MeteringRectangle? = null   // vùng đo sáng: giữa khung (mặt đường), bỏ trời và capo
@@ -127,7 +136,12 @@ class CameraSource(
                 Thread.sleep(100)
                 need = rotationNeeded(sensor)
             }
-            if (need == 90 || need == 270) throw IllegalStateException("Hãy xoay ngang điện thoại (bật tự xoay màn hình) rồi bấm chạy lại")
+            // App luôn khoá ngang; có máy (ColorOS) vẫn báo màn hình dọc lúc mới mở hoặc khi tắt tự xoay.
+            // Không dừng camera nữa: coi như máy đang ngang chiều thường (ảnh không lật)
+            if (need == 90 || need == 270) {
+                Log.w(CTAG, "màn hình báo dọc (cần xoay $need°), coi như đang ngang")
+                need = 0
+            }
             flip = need == 180
         }
 
@@ -176,6 +190,16 @@ class CameraSource(
         val hd = Handler(t.looper)
         handler = hd
 
+        previewTexture?.let { st ->
+            try {
+                st.setDefaultBufferSize(size.width, size.height)
+                previewSurface = Surface(st)
+            } catch (e: Throwable) {
+                Log.w(CTAG, "không dùng được texture xem trực tiếp", e)
+                previewSurface = null
+            }
+        }
+
         val r = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 3)
         reader = r
         r.setOnImageAvailableListener({ rd ->
@@ -189,7 +213,7 @@ class CameraSource(
             cm.openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(d: CameraDevice) {
                     device = d
-                    startSession(d, r)
+                    startSession(d, r, previewSurface)
                 }
                 override fun onDisconnected(d: CameraDevice) {
                     fail(IllegalStateException("Camera bị ngắt kết nối")); d.close()
@@ -207,14 +231,15 @@ class CameraSource(
     }
 
     @Suppress("DEPRECATION")
-    private fun startSession(d: CameraDevice, r: ImageReader) {
+    private fun startSession(d: CameraDevice, r: ImageReader, pv: Surface?) {
         try {
-            d.createCaptureSession(listOf(r.surface), object : CameraCaptureSession.StateCallback() {
+            d.createCaptureSession(listOfNotNull(r.surface, pv), object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
                     session = s
                     try {
                         val req = d.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                             addTarget(r.surface)
+                            if (pv != null) addTarget(pv)
                             if (fixFocus) {
                                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                                 set(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)   // 0 = vô cực
@@ -227,10 +252,13 @@ class CameraSource(
                             set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
                         }.build()
                         s.setRepeatingRequest(req, null, handler)
+                        previewing = pv != null
                     } catch (e: Throwable) { fail(e) }
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {
-                    fail(IllegalStateException("Không cấu hình được phiên camera"))
+                    // Máy không cho 2 luồng (YUV + texture) cùng lúc: chạy lại chỉ với YUV, hiển thị bằng CPU như cũ
+                    if (pv != null) { Log.w(CTAG, "không chạy được 2 luồng, bỏ hình GPU"); startSession(d, r, null) }
+                    else fail(IllegalStateException("Không cấu hình được phiên camera"))
                 }
             }, handler)
         } catch (e: Throwable) { fail(e) }
@@ -325,6 +353,9 @@ class CameraSource(
         try { session?.close() } catch (_: Throwable) {}
         try { device?.close() } catch (_: Throwable) {}
         try { reader?.close() } catch (_: Throwable) {}
+        try { previewSurface?.release() } catch (_: Throwable) {}
+        previewSurface = null
+        previewing = false
         try { thread?.quitSafely() } catch (_: Throwable) {}
         session = null; device = null; reader = null; thread = null; handler = null
     }
