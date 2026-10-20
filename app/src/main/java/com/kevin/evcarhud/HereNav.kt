@@ -162,7 +162,7 @@ class HereNav(private val gps: LocationFallback) {
             try {
                 val u = String.format(Locale.US,
                     "%s?transportMode=%s&origin=%.6f,%.6f&destination=%.6f,%.6f&return=polyline,summary,turnByTurnActions%s&lang=vi-VN&apiKey=%s",
-                    ROUTE, veh, lat, lon, destLat, destLon, if (withSpans) "&spans=names,speedLimit" else "", enc(key))
+                    ROUTE, veh, lat, lon, destLat, destLon, if (withSpans) "&spans=names,maxSpeed" else "", enc(key))
                 val (code, body) = get(u)
                 if (code == 400 && withSpans) { err = httpNote(code); continue }
                 if (code != 200) { err = httpNote(code); break }
@@ -223,8 +223,9 @@ class HereNav(private val gps: LocationFallback) {
             sec.optJSONArray("spans")?.let { sp ->
                 for (i in 0 until sp.length()) {
                     val s = sp.optJSONObject(i) ?: continue
-                    // speedLimit tính bằng m/s, làm tròn về bội số 5 km/h; đoạn không có dữ liệu -> 0
-                    val ms = s.optDouble("speedLimit", Double.NaN)
+                    // maxSpeed (thay speedLimit đã bị HERE bỏ dần) tính bằng m/s, làm tròn về bội số 5 km/h;
+                    // đoạn không có dữ liệu hoặc "unlimited" -> 0
+                    val ms = s.optDouble("maxSpeed", s.optDouble("speedLimit", Double.NaN))
                     val kmh = if (ms.isNaN() || ms <= 0.0) 0 else (ms * 3.6 / 5.0).roundToInt() * 5
                     val nm = s.optJSONArray("names")?.let { firstName(it) } ?: ""
                     if (spAt.isNotEmpty() && nm == lastName && kmh == lastKmh) continue

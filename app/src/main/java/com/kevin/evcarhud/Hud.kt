@@ -93,6 +93,8 @@ object HudRenderer {
         private set
     @Volatile var signAtMs = 0L
         private set
+    // Xoá giới hạn đọc từ biển (khi rẽ sang đường khác)
+    fun clearSignLimit() { signLimit = 0 }
     // Cho hiệu chỉnh chiều cao camera: khoảng cách theo điểm tiếp đất của xe phía trước ở khung gần nhất (NaN nếu không có)
     @Volatile var calibGround = Float.NaN
         private set

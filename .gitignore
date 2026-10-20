@@ -13,3 +13,7 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Model (quá lớn cho GitHub) và gói zip gửi file
+*.onnx
+*.zip

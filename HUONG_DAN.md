@@ -194,3 +194,22 @@ https://claude.ai/artifact/Pz5ZwAYxFnRDrrETmEKpkh có thêm: Tình huống (bìn
   - HUD hiện hướng rẽ, giọng đọc, bản đồ, giới hạn tốc độ HERE như chạy thật.
   - Cảnh báo va chạm lúc này chỉ dùng tốc độ camera, nên để máy yên trên bàn không bị kêu.
   - Bấm "Dừng chỉ đường" để tắt xe ảo.
+
+## Giảm nhiệt bằng GPU (20/10 tối)
+File sửa: `MainActivity.kt`, `CameraSource.kt`.
+- Nhật ký nhiệt cho thấy CPU nóng 74–89°C khi đứng yên dù NPU chỉ mất 35–55 ms: thủ phạm là CPU đổi màu YUV→RGB và vẽ HUD lên bitmap 1024 px ở mọi khung.
+- Giờ hình camera điện thoại đi thẳng vào GPU (TextureView). CPU chỉ đổi màu 4 lần/giây cho ảnh cảnh báo / ảnh huấn luyện.
+- HUD được ghi thành Picture rồi vẽ bằng GPU trên một lớp phủ, áp dụng cho mọi nguồn (cả video, USB, Wi‑Fi).
+- Cài đặt › Hiệu năng › **Hình camera qua GPU (mát máy)**: bật mặc định. Nếu hình bị xoay sai, méo hoặc đen thì tắt đi và báo lại.
+- HUD có thể trễ hơn hình camera 1–3 khung (vài chục ms), bình thường.
+- Test nhiệt: rút sạc, tắt "Thu ảnh huấn luyện", để chạy 20 phút rồi gửi file trong `files/thermal/`.
+
+## Chế độ chạy lâu 1–3 tiếng (20/10 tối)
+File sửa: `MainActivity.kt`, `ThermalLog.kt`.
+- NPU (supercombo) không chạy 20 lần/giây liên tục nữa: thường 15, trên 60 km/h 20, máy ấm (mức 2–3) 10, đứng yên hoặc rất nóng 5.
+- Khi có nguy cơ va chạm (viền vàng/đỏ), NPU tự lên 20 lần/giây trong 3 giây.
+- YOLO tính theo lần/giây: thường 7, mức 2 là 4, mức 3 trở lên 2,5. Không tắt hẳn vì YOLO là nguồn cảnh báo xe cắt đầu / người đi bộ.
+- Thêm ngưỡng nhiệt CPU: từ 70°C lên mức 2, từ 78°C lên mức 3. Mức 3 được giữ tới khi CPU dưới 72°C liền 30 giây.
+- Từ mức 2 trở lên, app tạm ngừng "Thu ảnh huấn luyện".
+- Ở mức 3, app nhắc bằng giọng nói "Máy đang nóng, hãy bật điều hoà hướng vào điện thoại" (đang sạc thì thêm "dùng sạc chậm"), tối đa 10 phút một lần.
+- Nhật ký nhiệt: cột `yolo_hz` và `npu_hz` thay cho hai cột cũ.
