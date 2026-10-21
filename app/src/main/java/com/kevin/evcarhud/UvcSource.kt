@@ -1,7 +1,9 @@
 package com.kevin.evcarhud
 
 import android.content.Context
+import android.graphics.PixelFormat
 import android.hardware.usb.UsbConstants
+import android.media.ImageReader
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Handler
@@ -39,6 +41,7 @@ class UvcSource(
     private var handler: Handler? = null
     private var monitor: USBMonitor? = null
     private var camera: UVCCamera? = null
+    private var sink: ImageReader? = null
     private var t0 = -1L
     private var lastNs = -1L
 
@@ -169,6 +172,16 @@ class UvcSource(
         height = s.height
         Log.d(UTAG, "camera USB ${width}x$height type=${s.type} fps=${s.fps}")
         cam.setFrameCallback(IFrameCallback { buf -> onFrame(buf) }, UVCCamera.PIXEL_FORMAT_NV21)
+        // Webcam mở được nhưng 0 khung khi không có bề mặt hiển thị (đo trên OPPO Find X8 Ultra);
+        // cho nó một bề mặt ẩn, khung vẽ vào đó bị bỏ ngay
+        try {
+            val r = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            r.setOnImageAvailableListener({ ir -> try { ir.acquireLatestImage()?.close() } catch (_: Throwable) {} }, handler)
+            cam.setPreviewDisplay(r.surface)
+            sink = r
+        } catch (e: Throwable) {
+            Log.w(UTAG, "không tạo được bề mặt ẩn", e)
+        }
         cam.startPreview()
         stage = "đã chạy"
     }
@@ -251,6 +264,8 @@ class UvcSource(
             try { camera?.stopPreview() } catch (_: Throwable) {}
             try { camera?.destroy() } catch (_: Throwable) {}
             camera = null
+            try { sink?.close() } catch (_: Throwable) {}
+            sink = null
             try { monitor?.unregister() } catch (_: Throwable) {}
             try { monitor?.destroy() } catch (_: Throwable) {}
             monitor = null
