@@ -123,6 +123,11 @@ class UvcSource(
                     fail(IllegalStateException("Chưa cho phép app dùng camera USB"))
                     opened.countDown()
                 }
+                // Có quyền nhưng Android không cho mở thiết bị (thường do hệ thống / app khác đang giữ webcam)
+                override fun onError(device: UsbDevice, e: USBMonitor.USBException) {
+                    fail(IllegalStateException("Không mở được webcam qua USB: ${e.message ?: e.javaClass.simpleName}", e))
+                    opened.countDown()
+                }
             }, hd)
             monitor = m
             m.register()
@@ -133,7 +138,7 @@ class UvcSource(
         val deadline = SystemClock.elapsedRealtime() + 60_000L
         while (!opened.await(200, TimeUnit.MILLISECONDS)) {
             if (!alive() || SystemClock.elapsedRealtime() > deadline) {
-                throw IllegalStateException("Chưa mở được camera USB (chưa cấp quyền?)")
+                throw IllegalStateException("Chưa mở được camera USB sau 60 s ($stage)")
             }
         }
         error?.let { throw it }
