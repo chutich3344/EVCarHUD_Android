@@ -1453,6 +1453,9 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
                 ?: "Ghi mỗi 10 s khi app chạy.") + " Bấm để gửi file qua Zalo, Gmail, Drive...") {
                 if (!runner.thermalLog.share(shareCtx)) runner.status = "Chưa có file nhật ký nhiệt"
             }
+            RowLine(); NavRow("Lưu nhật ký vào Download", desc = "Chép file nhật ký mới nhất vào Download/EVCarHUD trên máy.") {
+                runner.status = runner.thermalLog.saveToDownloads(shareCtx)?.let { "Đã lưu $it" } ?: "Chưa có file nhật ký nhiệt hoặc lưu lỗi"
+            }
             if (runner.lastExit.isNotEmpty()) { RowLine(); NavRow("Lần thoát trước", desc = runner.lastExit) }
             RowLine(); NavRow("GPS", desc = runner.gps.statusText())
         }
