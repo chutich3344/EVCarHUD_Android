@@ -244,3 +244,31 @@ class UvcSource(
         thread = null; handler = null
     }
 }
+
+// Nguồn "Camera USB": đọc thẳng chuẩn UVC trước (cách các app webcam khác dùng, chạy được trên ColorOS);
+// chỉ khi không mở được mới thử Camera2 (máy đưa webcam vào Camera2 dạng camera ngoài).
+// Trước đây ưu tiên Camera2: trên một số máy camera ngoài mở được nhưng không ra khung -> báo "Camera treo" lặp mãi.
+class UsbCamSource(private val context: Context, private val alive: () -> Boolean) : FrameSource {
+    private var src: FrameSource? = null
+    override val frameUs: Long get() = src?.frameUs ?: 33_333L
+
+    override fun open() {
+        val uvc = UvcSource(context, alive)
+        try {
+            uvc.open()
+            src = uvc
+            return
+        } catch (e: Throwable) {
+            try { uvc.release() } catch (_: Throwable) {}
+            if (!alive() || !CameraSource.hasExternal(context)) throw e
+            Log.w(UTAG, "UVC không mở được, thử Camera2 camera ngoài", e)
+        }
+        val cam = CameraSource(context, external = true, alive = alive)
+        cam.open()
+        src = cam
+    }
+
+    override fun nextFrame(minPtsUs: Long, dst: YuvFrame): Boolean = src?.nextFrame(minPtsUs, dst) ?: false
+
+    override fun release() { try { src?.release() } finally { src = null } }
+}
