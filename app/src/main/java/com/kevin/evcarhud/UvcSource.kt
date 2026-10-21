@@ -56,8 +56,41 @@ class UvcSource(
         }
     }
 
+    // Máy đang thấy gì qua cổng USB và Camera2 (để biết vì sao không nhận webcam)
+    private fun usbReport(): String {
+        val um = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        val devs = um.deviceList.values
+        val usb = if (devs.isEmpty()) "USB: không có thiết bị nào (cổng đang không ở chế độ OTG/host?)"
+        else "USB: " + devs.joinToString("; ") { d ->
+            val cls = (0 until d.interfaceCount).map { d.getInterface(it).interfaceClass }.distinct().joinToString(",")
+            String.format("%04x:%04x lớp %d [%s]", d.vendorId, d.productId, d.deviceClass, cls)
+        }
+        val cams = try {
+            val cm = context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+            cm.cameraIdList.joinToString(",") { id ->
+                when (cm.getCameraCharacteristics(id).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING)) {
+                    android.hardware.camera2.CameraCharacteristics.LENS_FACING_EXTERNAL -> "$id=ngoài"
+                    android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT -> "$id=trước"
+                    else -> "$id=sau"
+                }
+            }
+        } catch (e: Throwable) { "?" }
+        return "$usb | Camera2: $cams"
+    }
+
     override fun open() {
-        val dev = findCamera() ?: throw IllegalStateException("Không thấy camera USB. Cắm webcam qua OTG rồi chạy lại")
+        // Cắm qua hub / cổng chia, webcam có thể hiện ra chậm vài giây: chờ tối đa 4 s
+        var found = findCamera()
+        val until = SystemClock.elapsedRealtime() + 4000L
+        while (found == null && alive() && SystemClock.elapsedRealtime() < until) {
+            Thread.sleep(250)
+            found = findCamera()
+        }
+        val dev = found ?: run {
+            val rep = usbReport()
+            Log.w(UTAG, "không thấy webcam: $rep")
+            throw IllegalStateException("Không thấy camera USB. $rep")
+        }
         val t = HandlerThread("uvc-src").also { it.start() }
         thread = t
         val hd = Handler(t.looper)
