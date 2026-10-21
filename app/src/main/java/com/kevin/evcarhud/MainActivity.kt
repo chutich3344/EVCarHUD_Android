@@ -707,7 +707,7 @@ class Runner(private val ctx: Context) {
                 // Tạm nghỉ làm mát: luồng A cố ý không đẩy khung, không phải camera treo (trước đây bị mở lại camera liên tục)
                 if (coolPause) { lastFrameAt = SystemClock.elapsedRealtime(); continue }
                 if (live && SystemClock.elapsedRealtime() - lastFrameAt > STALL_MS) {
-                    status = "Camera treo, đang mở lại..."
+                    status = "Camera treo, đang mở lại..." + ((curSrc as? UsbCamSource)?.info()?.let { " ($it)" } ?: "")
                     break
                 }
                 continue
@@ -939,8 +939,8 @@ class Runner(private val ctx: Context) {
         if (!live) return VideoDecoder(ctx, uri!!)
         return when (camKind) {
             CamKind.PHONE -> CameraSource(ctx) { run.alive }.also { if (gpuPreview) it.previewTexture = previewTexture }
-            // Camera USB qua Camera2 (chỉ máy nào hỗ trợ sẵn). Thư viện UVC tạm bỏ vì chưa tải được từ JitPack.
-            CamKind.USB -> CameraSource(ctx, external = true) { run.alive }
+            // Camera USB: đọc thẳng chuẩn UVC (webcam, module camera USB), không được mới thử Camera2 camera ngoài
+            CamKind.USB -> UsbCamSource(ctx) { run.alive }
             CamKind.WIFI -> NetStreamSource(ctx, streamUrl.trim()) { run.alive }
         }
     }

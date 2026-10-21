@@ -213,3 +213,11 @@ File sửa: `MainActivity.kt`, `ThermalLog.kt`.
 - Từ mức 2 trở lên, app tạm ngừng "Thu ảnh huấn luyện".
 - Ở mức 3, app nhắc bằng giọng nói "Máy đang nóng, hãy bật điều hoà hướng vào điện thoại" (đang sạc thì thêm "dùng sạc chậm"), tối đa 10 phút một lần.
 - Nhật ký nhiệt: cột `yolo_hz` và `npu_hz` thay cho hai cột cũ.
+
+## Webcam / camera USB qua OTG (21/10)
+File: `UvcSource.kt` (mới), `MainActivity.kt`, `app/build.gradle.kts` (thêm thư viện `com.herohan:UVCAndroid:1.0.13` từ Maven Central).
+- Cài đặt › Nguồn camera › **USB (OTG)**. Máy nào đưa camera USB vào Camera2 thì dùng Camera2, không thì app đọc thẳng chuẩn UVC.
+- Lần đầu cắm, Android hỏi "Cho phép EVCarHUD truy cập thiết bị USB": bấm Cho phép (nên tick "luôn dùng").
+- App chọn MJPEG 1280x720 nếu webcam có, 30 hình/giây. Webcam không xoay theo màn hình: gắn sao cho hình thẳng.
+- Đặt "FOV ngang camera" đúng góc của webcam (thường 60–80°).
+- Sạc cùng lúc: dùng hub OTG có cổng cấp nguồn (PD). Android Auto lúc đó phải dùng không dây.
