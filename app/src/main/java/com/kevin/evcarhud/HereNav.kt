@@ -1,6 +1,10 @@
 package com.kevin.evcarhud
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -16,6 +20,10 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlin.math.atan2
+import kotlin.math.floor
+import kotlin.math.hypot
+import kotlin.math.ln
+import kotlin.math.tan
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -422,6 +430,81 @@ class HereNav(private val gps: LocationFallback) {
     private val panel = RectF()
     private val mapR = RectF()
 
+    // ---------- Nền bản đồ: ô ảnh HERE Raster Tile v3 kiểu lite.night, nhuộm xanh, quay theo hướng tuyến ----------
+    // Mỗi ô 256 px tải một lần rồi giữ trong bộ nhớ (tối đa TILE_MAX ô); mỗi ô tải về tính một lượt gọi API.
+    private val tileExec = Executors.newSingleThreadExecutor()
+    private val tiles = object : LinkedHashMap<Long, Bitmap>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Bitmap>?) = size > TILE_MAX
+    }
+    private val tileWait = HashSet<Long>()
+    private var tileFailAt = 0L
+    private val tileP = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+        // độ sáng -> xanh ngọc: nền tối gần đen-xanh, đường sáng thành xanh nhạt
+        colorFilter = ColorMatrixColorFilter(ColorMatrix(floatArrayOf(
+            0.05f, 0.10f, 0.02f, 0f, 0f,
+            0.20f, 0.45f, 0.10f, 0f, 8f,
+            0.25f, 0.55f, 0.12f, 0f, 22f,
+            0f, 0f, 0f, 0.85f, 0f)))
+    }
+    private val tileDst = RectF()
+
+    private fun tileKey(z: Int, x: Int, y: Int) = (z.toLong() shl 50) or (x.toLong() shl 25) or y.toLong()
+
+    private fun tile(z: Int, x: Int, y: Int): Bitmap? {
+        val key = tileKey(z, x, y)
+        synchronized(tiles) {
+            tiles[key]?.let { return it }
+            val k = apiKey.trim()
+            if (k.isEmpty() || key in tileWait || tileWait.size >= 8) return null
+            if (SystemClock.elapsedRealtime() - tileFailAt < 15_000L) return null
+            tileWait.add(key)
+            tileExec.execute {
+                var bmp: Bitmap? = null
+                try {
+                    val c = URL(String.format(Locale.US, "%s/%d/%d/%d/png8?style=lite.night&apiKey=%s", TILE, z, x, y, enc(k)))
+                        .openConnection() as HttpURLConnection
+                    try {
+                        c.connectTimeout = 6000
+                        c.readTimeout = 8000
+                        calls++
+                        if (c.responseCode == 200) bmp = c.inputStream.use { BitmapFactory.decodeStream(it) }
+                        else Log.w("HereNav", "tile HTTP ${c.responseCode}")
+                    } finally { c.disconnect() }
+                } catch (e: Exception) {
+                    Log.w("HereNav", "tile lỗi: ${e.message}")
+                }
+                synchronized(tiles) {
+                    tileWait.remove(key)
+                    if (bmp != null) tiles[key] = bmp!! else tileFailAt = SystemClock.elapsedRealtime()
+                }
+            }
+            return null
+        }
+    }
+
+    // Vẽ các ô quanh vị trí xe trong hệ toạ độ đã quay (gốc tại xe, trục y hướng nam), s = px màn hình / mét
+    private fun drawTiles(canvas: Canvas, s: Double, radiusPx: Float, rangeM: Double) {
+        if (apiKey.isBlank()) return
+        val z = if (rangeM > 600.0) 15 else 16
+        val world = 256.0 * (1 shl z)
+        val latR = Math.toRadians(snapLat)
+        val gx = (snapLon + 180.0) / 360.0 * world
+        val gy = (1.0 - ln(tan(latR) + 1.0 / cos(latR)) / Math.PI) / 2.0 * world
+        val f = s * 156_543.034 * cos(latR) / (1 shl z)       // px màn hình cho mỗi px ô ở mức z
+        val span = radiusPx / f
+        val tx0 = floor((gx - span) / 256.0).toInt(); val tx1 = floor((gx + span) / 256.0).toInt()
+        val ty0 = floor((gy - span) / 256.0).toInt(); val ty1 = floor((gy + span) / 256.0).toInt()
+        val n = 1 shl z
+        for (ty in ty0..ty1) for (tx in tx0..tx1) {
+            if (ty < 0 || ty >= n) continue
+            val b = tile(z, ((tx % n) + n) % n, ty) ?: continue
+            val l = ((tx * 256.0 - gx) * f).toFloat(); val t = ((ty * 256.0 - gy) * f).toFloat()
+            val sz = (256.0 * f).toFloat()
+            tileDst.set(l, t, l + sz + 0.5f, t + sz + 0.5f)
+            canvas.drawBitmap(b, null, tileDst, tileP)
+        }
+    }
+
     fun drawPanel(canvas: Canvas, k: Float, x: Float, y: Float, w: Float, h: Float, speedKmh: Float) {
         if (!active || !showMini) return
         val r = cur ?: return
@@ -451,6 +534,11 @@ class HereNav(private val gps: LocationFallback) {
         canvas.save()
         canvas.clipRect(mapR)
         canvas.drawRoundRect(mapR, 12f * k, 12f * k, mapBg)
+        canvas.save()
+        canvas.translate(cx, egoY)
+        canvas.rotate(-Math.toDegrees(heading).toFloat())
+        drawTiles(canvas, s.toDouble(), hypot(mapR.width() / 2f, egoY - mapR.top) + 8f * k, rangeM)
+        canvas.restore()
         val n = r.lat.size
         // Đoạn đã đi (mờ)
         path.reset()
@@ -635,6 +723,8 @@ class HereNav(private val gps: LocationFallback) {
         private const val TAG = "HereNav"
         private const val SUGGEST = "https://autosuggest.search.hereapi.com/v1/autosuggest"
         private const val ROUTE = "https://router.hereapi.com/v8/routes"
+        private const val TILE = "https://maps.hereapi.com/v3/base/mc"
+        private const val TILE_MAX = 48
         private const val FLEX = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
         const val UPDATE_MS = 300L
         const val OFF_M = 45.0

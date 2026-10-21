@@ -652,17 +652,19 @@ object HudRenderer {
         label(canvas, text, x, y + 38f * k, 13f * k, mc, Paint.Align.CENTER, medium)
     }
 
-    // Tốc độ: số lớn chữ mảnh, "km/h" nhỏ bên dưới, không vòng tròn; đáy chữ km/h ở bottom.
+    // Tốc độ: số lớn chữ đậm vừa canh giữa tại cx, "km/h" bên phải cùng chân chữ (giống "m" của khoảng cách).
     // Vượt giới hạn > 3 km/h: số đỏ nhấp nháy
-    private fun drawSpeedText(canvas: Canvas, cx: Float, bottom: Float, speedKmh: Float, limitKmh: Int, k: Float, animSec: Float) {
+    private fun drawSpeedText(canvas: Canvas, cx: Float, baseline: Float, speedKmh: Float, limitKmh: Int, k: Float, animSec: Float) {
         val over = limitKmh > 0 && speedKmh > limitKmh + 3f
         val off = over && ((animSec * 4f).toInt() % 2 == 1)
-        tBig.typeface = thin
+        val txt = if (speedKmh > 1f) speedKmh.roundToInt().toString() else "--"
+        tBig.typeface = medium
         tBig.textAlign = Paint.Align.CENTER
         tBig.textSize = 96f * k
         tBig.color = if (over) (if (off) 0x59FF5252 else 0xFFFF5252.toInt()) else 0xFFFFFFFF.toInt()
-        canvas.drawText(if (speedKmh > 1f) speedKmh.roundToInt().toString() else "--", cx, bottom - 28f * k, tBig)
-        label(canvas, "km/h", cx, bottom - 2f * k, 20f * k, 0xFFE0E6EA.toInt(), Paint.Align.CENTER, medium)
+        canvas.drawText(txt, cx, baseline, tBig)
+        val nw = tBig.measureText(txt)
+        label(canvas, "km/h", cx + nw / 2f + 10f * k, baseline, 28f * k, 0xFFE0E6EA.toInt(), Paint.Align.LEFT, medium)
     }
 
     // Trả về mức cảnh báo: 0 = bình thường, 1 = chú ý (viền vàng, không tiếng), 2 = nguy hiểm (tiếng tít + viền đỏ)
@@ -960,8 +962,8 @@ object HudRenderer {
             tSmall.textSize = 32f * k; tSmall.color = 0xFFE0E6EA.toInt()
             canvas.drawText(weatherText, 52f * k, 162f * k, tSmall)
         }
-        // Góc phải dưới nút Cài đặt: chế độ đường + GPS + CAMERA (tên đường không còn hiện trên HUD)
-        drawStatusBar(canvas, w - 40f * k, 112f * k, k, roadMode, gpsState, camState)
+        // Cạnh đồng hồ, cùng hàng: chế độ đường + GPS + CAMERA. Góc phải dưới nút Cài đặt để dành cho icon cảnh báo trên đường.
+        drawStatusBar(canvas, 500f * k, 84f * k, k, roadMode, gpsState, camState)
 
         // Giữa: khoảng cách số to; màu theo mức cảnh báo
         val midX = w / 2f
@@ -978,38 +980,22 @@ object HudRenderer {
         tBig.textSize = 150f * k
         val num = if (hasLead) lx.roundToInt().toString() else "--"
         canvas.drawText(num, midX, 220f * k, tBig)
-        if (hasLead) {
-            val nw = tBig.measureText(num)
-            label(canvas, "m", midX + nw / 2f + 10f * k, 220f * k, 40f * k, 0xFFDDE4E8.toInt(), Paint.Align.LEFT, medium)
-        }
+        val numW = tBig.measureText(num)
+        if (hasLead) label(canvas, "m", midX + numW / 2f + 10f * k, 220f * k, 40f * k, 0xFFDDE4E8.toInt(), Paint.Align.LEFT, medium)
         // Cao tốc: nhắc khoảng cách tối thiểu đang áp dụng
         val g = modeGap(roadMode, warnSpeedKmh, wet)
         if (g > 0f) label(canvas, "TỐI THIỂU ${g.roundToInt()} m", midX, 262f * k, 20f * k, 0xFFB8C4CC.toInt(), Paint.Align.CENTER, medium)
 
-        // Dưới, giữa tâm làn: biển giới hạn (cao bằng khối số + km/h) và tốc độ, cả cụm canh giữa;
-        // đáy cụm ngang đáy hai ô bản đồ / hướng rẽ (BOT_Y)
-        val bot = BOT_Y * k
-        val limR = 50f * k
-        tBig.typeface = thin
-        tBig.textSize = 96f * k
-        val spTxt = if (speedKmh > 1f) speedKmh.roundToInt().toString() else "--"
-        val spW = max(tBig.measureText(spTxt), 80f * k)
-        val gapX = 26f * k
-        val groupR: Float
-        if (limitKmh > 0) {
-            val x0 = midX - (2f * limR + gapX + spW) / 2f
-            drawLimitSign(canvas, x0 + limR, bot - limR, limR, limitKmh, speedKmh > limitKmh + 3f, k, animSec)
-            drawSpeedText(canvas, x0 + 2f * limR + gapX + spW / 2f, bot, speedKmh, limitKmh, k, animSec)
-            groupR = x0 + 2f * limR + gapX + spW
-        } else {
-            drawSpeedText(canvas, midX, bot, speedKmh, 0, k, animSec)
-            groupR = midX + spW / 2f
-        }
-        // Biển STOP / đèn giao thông camera vừa thấy: bên phải cụm tốc độ, vài giây
+        // Biển giới hạn: bên phải số khoảng cách, giữa chiều cao số. Biển STOP / đèn camera vừa thấy: ngay dưới (vài giây)
+        val limR = 44f * k
+        val signX = midX + numW / 2f + 74f * k + limR
+        if (limitKmh > 0) drawLimitSign(canvas, signX, 166f * k, limR, limitKmh, speedKmh > limitKmh + 3f, k, animSec)
         if (sign != null) { seenCls = sign.cls; seenAt = SystemClock.elapsedRealtime() }
         if (seenCls >= 0 && SystemClock.elapsedRealtime() - seenAt < SEEN_MS) {
-            drawSeenSign(canvas, groupR + gapX + 34f * k, bot - limR, 34f * k, seenCls, k)
+            drawSeenSign(canvas, signX, if (limitKmh > 0) 166f * k + limR + 44f * k else 166f * k, 34f * k, seenCls, k)
         }
+        // Dưới, giữa: tốc độ thẳng cột với số khoảng cách, chân chữ sát vạch capo (đáy hai ô bản đồ / hướng rẽ + 14)
+        drawSpeedText(canvas, midX, (BOT_Y + 14f) * k, speedKmh, limitKmh, k, animSec)
         // Chỉ đường: ô hướng rẽ bên phải (khung trong suốt có viền), ô bản đồ bên trái
         canvas.save()
         canvas.translate(w - 40f * k - 250f * k, 0f)

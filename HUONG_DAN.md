@@ -213,3 +213,9 @@ File sửa: `MainActivity.kt`, `ThermalLog.kt`.
 - Từ mức 2 trở lên, app tạm ngừng "Thu ảnh huấn luyện".
 - Ở mức 3, app nhắc bằng giọng nói "Máy đang nóng, hãy bật điều hoà hướng vào điện thoại" (đang sạc thì thêm "dùng sạc chậm"), tối đa 10 phút một lần.
 - Nhật ký nhiệt: cột `yolo_hz` và `npu_hz` thay cho hai cột cũ.
+
+## Bố cục HUD 21/10 + nền bản đồ HERE
+- Hàng Trong phố / GPS / Camera nằm cùng hàng với đồng hồ. Góc phải dưới nút ⚙ để trống cho icon cảnh báo trên đường (chưa có nguồn dữ liệu).
+- Biển giới hạn tốc độ nằm bên phải số khoảng cách; biển STOP / đèn giao thông camera vừa thấy hiện ngay dưới nó 4 giây.
+- Tốc độ chữ đậm hơn, canh giữa thẳng cột với khoảng cách, "km/h" bên phải số, sát vạch capo.
+- Ô bản đồ chỉ đường có nền bản đồ thật của HERE (kiểu đêm, nhuộm xanh), quay theo hướng đi. Mỗi ô ảnh 256 px tải một lần (tính một lượt gọi HERE), app giữ 48 ô gần nhất trong bộ nhớ. Không có key thì vẫn là nền tối như cũ.
