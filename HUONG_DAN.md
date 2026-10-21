@@ -218,6 +218,10 @@ File sửa: `MainActivity.kt`, `ThermalLog.kt`.
 - Hàng Trong phố / GPS / Camera nằm cùng hàng với đồng hồ. Góc phải dưới nút ⚙ để trống cho icon cảnh báo trên đường (chưa có nguồn dữ liệu).
 - Biển giới hạn tốc độ nằm bên phải số khoảng cách; biển STOP / đèn giao thông camera vừa thấy hiện ngay dưới nó 4 giây.
 - Tốc độ chữ đậm hơn, canh giữa thẳng cột với khoảng cách, "km/h" bên phải số, sát vạch capo.
+- (21/10 tối) Số tốc độ bám vạch capo; biển giới hạn to hơn, đứng cố định không nhảy theo số khoảng cách; giờ / thời tiết / trạng thái nhích lên.
+- "Che vùng capo" chỉ còn 3 mức 5 / 10 / 15%.
+- Góc trái dưới (trên vạch capo): CPU °C · PIN °C · NPU lần/s · YOLO lần/s, đỏ khi CPU từ 70°C. Android không cho đọc nhiệt RAM.
+- Webcam USB: 640 px rộng, 15 hình/s, hình vẽ thẳng lên màn hình qua GPU (CPU không đổi màu từng khung) để mát máy.
 - Ô bản đồ chỉ đường có nền bản đồ thật của HERE (kiểu đêm, nhuộm xanh), quay theo hướng đi. Mỗi ô ảnh 256 px tải một lần (tính một lượt gọi HERE), app giữ 48 ô gần nhất trong bộ nhớ. Không có key thì vẫn là nền tối như cũ.
 ## Webcam / camera USB qua OTG (21/10)
 File: `UvcSource.kt` (mới), `MainActivity.kt`, `app/build.gradle.kts` (thêm thư viện `com.herohan:UVCAndroid:1.0.13` từ Maven Central).

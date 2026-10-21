@@ -2,6 +2,7 @@ package com.kevin.evcarhud
 
 import android.content.Context
 import android.graphics.PixelFormat
+import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbConstants
 import android.media.ImageReader
 import android.hardware.usb.UsbDevice
@@ -9,6 +10,7 @@ import android.hardware.usb.UsbManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import android.view.Surface
 import android.util.Log
 import com.serenegiant.usb.IFrameCallback
 import com.serenegiant.usb.USBMonitor
@@ -42,6 +44,11 @@ class UvcSource(
     private var monitor: USBMonitor? = null
     private var camera: UVCCamera? = null
     private var sink: ImageReader? = null
+    // Hình webcam vẽ thẳng lên màn hình (TextureView) bằng thư viện: CPU không phải đổi YUV -> RGB mỗi khung
+    var previewTexture: SurfaceTexture? = null
+    private var previewSurface: Surface? = null
+    @Volatile var previewing = false
+        private set
     private var t0 = -1L
     private var lastNs = -1L
 
@@ -154,14 +161,16 @@ class UvcSource(
         if (r != 0) { cam.destroy(); throw IllegalStateException("Không mở được camera USB (mã $r)") }
         camera = cam
         val sizes = cam.supportedSizeList
-        // MJPEG 16:9 rộng tới 1280; không có thì MJPEG lớn nhất tới 1280; cuối cùng lấy kích thước thư viện chọn sẵn
-        val mjpeg = sizes.filter { it.type == UVCCamera.UVC_VS_FRAME_MJPEG && it.width <= 1280 }
-        val pick = mjpeg.filter { abs(it.width * 9 - it.height * 16) <= 16 }.maxByOrNull { it.width * it.height }
-            ?: mjpeg.maxByOrNull { it.width * it.height }
+        // Giảm nhiệt: MJPEG nhỏ nhất rộng từ 640 (ưu tiên 16:9, rồi 4:3), 15 hình/s (đủ cho NPU tối đa 20 lần/s
+        // sau khi đã hạ nhịp vì nhiệt); giải nén MJPEG chạy trên CPU nên khung càng nhỏ càng mát
+        val mjpeg = sizes.filter { it.type == UVCCamera.UVC_VS_FRAME_MJPEG && it.width in 640..1280 }
+        fun ratio(a: Int, b: Int) = mjpeg.filter { abs(it.width * b - it.height * a) <= a }.minByOrNull { it.width * it.height }
+        val pick = ratio(16, 9) ?: ratio(4, 3) ?: mjpeg.minByOrNull { it.width * it.height }
         if (pick != null) {
+            val fl = pick.fpsList ?: emptyList()
             val fps = when {
-                pick.fpsList?.contains(30) == true -> 30
-                pick.fpsList?.contains(20) == true -> 20
+                15 in fl -> 15
+                fl.any { it >= 15 } -> fl.filter { it >= 15 }.minOrNull() ?: pick.fps
                 else -> pick.fps
             }
             try { cam.setPreviewSize(pick.width, pick.height, UVCCamera.UVC_VS_FRAME_MJPEG, fps) }
@@ -172,9 +181,20 @@ class UvcSource(
         height = s.height
         Log.d(UTAG, "camera USB ${width}x$height type=${s.type} fps=${s.fps}")
         cam.setFrameCallback(IFrameCallback { buf -> onFrame(buf) }, UVCCamera.PIXEL_FORMAT_NV21)
-        // Webcam mở được nhưng 0 khung khi không có bề mặt hiển thị (đo trên OPPO Find X8 Ultra);
-        // cho nó một bề mặt ẩn, khung vẽ vào đó bị bỏ ngay
-        try {
+        // Webcam mở được nhưng 0 khung khi không có bề mặt hiển thị (đo trên OPPO Find X8 Ultra).
+        // Có TextureView thì vẽ thẳng lên đó (hiện hình không tốn CPU); không thì cho một bề mặt ẩn, khung vẽ vào đó bị bỏ ngay
+        val st = previewTexture
+        if (st != null) try {
+            st.setDefaultBufferSize(width, height)
+            val sf = Surface(st)
+            cam.setPreviewDisplay(sf)
+            previewSurface = sf
+            previewing = true
+        } catch (e: Throwable) {
+            Log.w(UTAG, "không vẽ được lên TextureView", e)
+            previewing = false
+        }
+        if (!previewing) try {
             val r = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
             r.setOnImageAvailableListener({ ir -> try { ir.acquireLatestImage()?.close() } catch (_: Throwable) {} }, handler)
             cam.setPreviewDisplay(r.surface)
@@ -266,6 +286,9 @@ class UvcSource(
             camera = null
             try { sink?.close() } catch (_: Throwable) {}
             sink = null
+            try { previewSurface?.release() } catch (_: Throwable) {}
+            previewSurface = null
+            previewing = false
             try { monitor?.unregister() } catch (_: Throwable) {}
             try { monitor?.destroy() } catch (_: Throwable) {}
             monitor = null
@@ -284,9 +307,12 @@ class UsbCamSource(private val context: Context, private val alive: () -> Boolea
     private var src: FrameSource? = null
     override val frameUs: Long get() = src?.frameUs ?: 33_333L
     fun info(): String = (src as? UvcSource)?.info() ?: if (src is CameraSource) "camera ngoài qua Camera2" else ""
+    var previewTexture: SurfaceTexture? = null
+    val previewing: Boolean get() = (src as? UvcSource)?.previewing == true
 
     override fun open() {
         val uvc = UvcSource(context, alive)
+        uvc.previewTexture = previewTexture
         src = uvc
         try {
             uvc.open()

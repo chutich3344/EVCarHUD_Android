@@ -15,6 +15,7 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.exp
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 // f, cx, cy tính theo pixel ảnh nguồn; scale = kích thước hiển thị / kích thước nguồn
@@ -683,7 +684,9 @@ object HudRenderer {
         alertFrame: Int = 0,             // viền cảnh báo đang bật (do luồng gọi giữ nhịp): 0 = không, 1 = vàng, 2 = đỏ chớp
         nav: HereNav? = null,            // chỉ đường HERE: ô bản đồ bên trái
         gpsState: Int = 0,               // icon GPS: 0 tốt, 1 yếu, 2 mất
-        camState: Int = 0                // icon CAMERA: 0 tốt, 1 chậm, 2 mất kết quả nhận diện
+        camState: Int = 0,               // icon CAMERA: 0 tốt, 1 chậm, 2 mất kết quả nhận diện
+        perfText: String = "",           // góc trái dưới, trên vạch capo: nhiệt CPU, pin, nhịp NPU / YOLO
+        perfHot: Boolean = false         // CPU >= 70°C: dòng trên chuyển đỏ
     ): Int {
         if (o.size < 2054) return 0
         val k = w / 1280f
@@ -956,14 +959,14 @@ object HudRenderer {
         tBig.textAlign = Paint.Align.LEFT
         tBig.color = 0xFFFFFFFF.toInt()
         tBig.textSize = 76f * k
-        if (clockText.isNotEmpty()) canvas.drawText(clockText, 48f * k, 112f * k, tBig)
+        if (clockText.isNotEmpty()) canvas.drawText(clockText, 48f * k, 96f * k, tBig)
         if (weatherText.isNotEmpty()) {
             tSmall.typeface = light; tSmall.letterSpacing = 0f; tSmall.textAlign = Paint.Align.LEFT
             tSmall.textSize = 32f * k; tSmall.color = 0xFFE0E6EA.toInt()
-            canvas.drawText(weatherText, 52f * k, 162f * k, tSmall)
+            canvas.drawText(weatherText, 52f * k, 144f * k, tSmall)
         }
         // Cạnh đồng hồ, cùng hàng: chế độ đường + GPS + CAMERA. Góc phải dưới nút Cài đặt để dành cho icon cảnh báo trên đường.
-        drawStatusBar(canvas, 500f * k, 84f * k, k, roadMode, gpsState, camState)
+        drawStatusBar(canvas, 500f * k, 66f * k, k, roadMode, gpsState, camState)
 
         // Giữa: khoảng cách số to; màu theo mức cảnh báo
         val midX = w / 2f
@@ -986,16 +989,25 @@ object HudRenderer {
         val g = modeGap(roadMode, warnSpeedKmh, wet)
         if (g > 0f) label(canvas, "TỐI THIỂU ${g.roundToInt()} m", midX, 262f * k, 20f * k, 0xFFB8C4CC.toInt(), Paint.Align.CENTER, medium)
 
-        // Biển giới hạn: bên phải số khoảng cách, giữa chiều cao số. Biển STOP / đèn camera vừa thấy: ngay dưới (vài giây)
-        val limR = 44f * k
-        val signX = midX + numW / 2f + 74f * k + limR
-        if (limitKmh > 0) drawLimitSign(canvas, signX, 166f * k, limR, limitKmh, speedKmh > limitKmh + 3f, k, animSec)
+        // Biển giới hạn: chỗ cố định bên phải số khoảng cách (số đổi 1 -> 3 chữ số biển không nhảy).
+        // Biển STOP / đèn camera vừa thấy: ngay dưới (vài giây)
+        val limR = 54f * k
+        val signX = midX + 232f * k
+        if (limitKmh > 0) drawLimitSign(canvas, signX, 160f * k, limR, limitKmh, speedKmh > limitKmh + 3f, k, animSec)
         if (sign != null) { seenCls = sign.cls; seenAt = SystemClock.elapsedRealtime() }
         if (seenCls >= 0 && SystemClock.elapsedRealtime() - seenAt < SEEN_MS) {
-            drawSeenSign(canvas, signX, if (limitKmh > 0) 166f * k + limR + 44f * k else 166f * k, 34f * k, seenCls, k)
+            drawSeenSign(canvas, signX, if (limitKmh > 0) 160f * k + limR + 44f * k else 160f * k, 34f * k, seenCls, k)
         }
-        // Dưới, giữa: tốc độ thẳng cột với số khoảng cách, chân chữ sát vạch capo (đáy hai ô bản đồ / hướng rẽ + 14)
-        drawSpeedText(canvas, midX, (BOT_Y + 14f) * k, speedKmh, limitKmh, k, animSec)
+        // Dưới, giữa: tốc độ thẳng cột với số khoảng cách, chân chữ bám vạch capo (hạ vạch thì số xuống theo)
+        val frameBot = imgH * cam.scale
+        drawSpeedText(canvas, midX, min(hoodYd - 20f * k, frameBot - 14f * k), speedKmh, limitKmh, k, animSec)
+        // Hiệu năng máy: chữ trắng nhỏ có bóng, góc trái ngay trên vạch capo
+        if (perfText.isNotEmpty()) {
+            tSmall.setShadowLayer(4f * k, 0f, 0f, 0xCC000000.toInt())
+            label(canvas, perfText, 24f * k, min(hoodYd, frameBot) - 12f * k, 16f * k,
+                if (perfHot) 0xFFFF5252.toInt() else 0xFFFFFFFF.toInt(), Paint.Align.LEFT, medium)
+            tSmall.clearShadowLayer()
+        }
         // Chỉ đường: ô hướng rẽ bên phải (khung trong suốt có viền), ô bản đồ bên trái
         canvas.save()
         canvas.translate(w - 40f * k - 250f * k, 0f)

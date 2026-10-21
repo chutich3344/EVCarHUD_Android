@@ -86,6 +86,7 @@ import androidx.compose.runtime.LaunchedEffect
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -127,7 +128,7 @@ private const val STATUS_MS = 500L      // chu kỳ cập nhật dòng trạng t
 private const val RESYNC_NS = 250_000_000L  // trễ quá 250 ms thì đồng bộ lại đồng hồ phát, không "tua nhanh"
 private const val STALL_MS = 5000L      // camera không ra khung nào quá 5 s -> coi là treo, tự mở lại
 private const val YOLO_ROI_W = 0.8f   // YOLO nhìn dải giữa khung (đường phía trước) rộng 80% chiều ngang; 1f = toàn khung
-private const val HOOD_DEFAULT = 0.15f  // mặc định che 15% đáy khung (capo khi đặt máy trên taplo); chỉnh bằng thanh trượt
+private const val HOOD_DEFAULT = 0.15f  // mặc định che 15% đáy khung (capo khi đặt máy trên taplo); chọn 5 / 10 / 15% trong Cài đặt
 private const val STREAM_DEFAULT = "rtsp://192.168.0.1:554/livestream/12"  // 70mai (M300/M310…); chip Novatek: rtsp://192.168.1.254/xxx.mov
 
 // Nguồn camera trực tiếp
@@ -188,6 +189,9 @@ class Runner(private val ctx: Context) {
     var coolTarget by mutableStateOf(prefs.getFloat("coolTarget", 40f).coerceIn(35f, 45f))
     var capFps by mutableStateOf(true)       // phát đúng nhịp thời gian thực của video
     var thermalLine by mutableStateOf("")
+    // Dòng hiệu năng trên HUD (luồng nhiệt ghi, luồng vẽ đọc)
+    @Volatile private var perfText = ""
+    @Volatile private var perfCpu = Float.NaN
     var warnOn by mutableStateOf(true)        // cảnh báo va chạm (tiếng tít + viền đỏ)
     var alertFlash by mutableStateOf(false)   // pha "sáng" của viền đỏ chớp
     var cautionOn by mutableStateOf(false)    // viền vàng "chú ý" (không tiếng)
@@ -249,6 +253,8 @@ class Runner(private val ctx: Context) {
         previewTexture = st
         val src = curSrc
         if (src is CameraSource && camKind == CamKind.PHONE && running && useCamera &&
+            (if (st != null) gpuPreview && !src.previewing else src.previewing)) restartCamera()
+        else if (src is UsbCamSource && camKind == CamKind.USB && running && useCamera &&
             (if (st != null) gpuPreview && !src.previewing else src.previewing)) restartCamera()
     }
     fun restartCamera() { if (running && useCamera) { running = false; startCamera() } }
@@ -520,7 +526,7 @@ class Runner(private val ctx: Context) {
                 val bmp = ring[ri] ?: Bitmap.createBitmap(DW, dh, Bitmap.Config.ARGB_8888).also { ring[ri] = it }
                 val nowConv = SystemClock.elapsedRealtime()
                 // Hình đang qua GPU: bitmap chỉ dùng cho ảnh cảnh báo / huấn luyện nên cũng chỉ đổi 4 lần/giây
-                val gpuShow = (dec as? CameraSource)?.previewing == true
+                val gpuShow = (dec as? CameraSource)?.previewing == true || (dec as? UsbCamSource)?.previewing == true
                 var shownBmp = lastBmp
                 if (shownBmp == null || shownBmp.height != dh || !(HudRenderer.reflect || gpuShow) || nowConv - lastConv >= REFLECT_CONV_MS) {
                     conv.convert(yuv, DW, dh, rgb)
@@ -591,6 +597,13 @@ class Runner(private val ctx: Context) {
                         else if (++calm >= 3) { held--; calm = 0 }   // 3 lần đọc liền (6 s) thấp hơn mới hạ mức
                         applyThermal(held)
                         thermalLine = thermalText(ti, held)
+                        perfCpu = cpuEma
+                        perfText = buildString {
+                            append("CPU ").append(if (cpuEma.isNaN()) "--" else cpuEma.roundToInt().toString()).append("°C")
+                            append(" · PIN ").append(if (ti.batteryC.isNaN()) "--" else ti.batteryC.roundToInt().toString()).append("°C")
+                            append(" · NPU ").append(npuRate()).append("/s")
+                            append(" · YOLO ").append(yoloHz.roundToInt()).append("/s")
+                        }
                         // Mức 3 trở lên: nhắc người lái một lần mỗi 10 phút
                         if (thermalAuto && held >= 3 && c - hotSaid > 600_000L) {
                             hotSaid = c
@@ -767,7 +780,8 @@ class Runner(private val ctx: Context) {
                     // Chạy thử tuyến: cảnh báo chỉ theo tốc độ camera (xe ảo 40 km/h không được làm kêu khi máy đang để yên)
                     if (gps.mocking) r.speedKmh else maxOf(spd, r.speedKmh),
                     job.h, hoodCut, roadMode, weather.wet, frameAlert, nav,
-                    if (live || gps.mocking) gps.quality() else 2, camState)
+                    if (live || gps.mocking) gps.quality() else 2, camState,
+                    perfText, perfCpu >= 70f)
                 pk.endRecording()
                 pic = pk
                 if (r.yoloMs >= 0) lastYoloMs = r.yoloMs
@@ -940,7 +954,7 @@ class Runner(private val ctx: Context) {
         return when (camKind) {
             CamKind.PHONE -> CameraSource(ctx) { run.alive }.also { if (gpuPreview) it.previewTexture = previewTexture }
             // Camera USB: đọc thẳng chuẩn UVC (webcam, module camera USB), không được mới thử Camera2 camera ngoài
-            CamKind.USB -> UsbCamSource(ctx) { run.alive }
+            CamKind.USB -> UsbCamSource(ctx) { run.alive }.also { if (gpuPreview) it.previewTexture = previewTexture }
             CamKind.WIFI -> NetStreamSource(ctx, streamUrl.trim()) { run.alive }
         }
     }
@@ -1066,13 +1080,15 @@ private fun FrameView(runner: Runner, modifier: Modifier, scale: ContentScale) {
 // Hình camera điện thoại qua GPU. Camera2 đẩy hình vào SurfaceTexture theo chiều dọc tự nhiên của máy;
 // app khoá ngang nên xoay lại ±90° và bù tỉ lệ (khung View đã cùng tỉ lệ với ảnh camera)
 @Composable
-private fun CameraTexture(runner: Runner, modifier: Modifier) {
+private fun CameraTexture(runner: Runner, modifier: Modifier, rotate: Boolean = true) {
     AndroidView(modifier = modifier, factory = { c ->
         TextureView(c).apply {
             fun fix() {
                 val vw = width.toFloat()
                 val vh = height.toFloat()
                 if (vw <= 0f || vh <= 0f) return
+                // Webcam USB: thư viện vẽ đúng chiều, khung View đã cùng tỉ lệ ảnh nên không cần biến đổi
+                if (!rotate) { setTransform(null); return }
                 @Suppress("DEPRECATION")
                 // App khoá ngang: máy báo dọc (0) thì coi như ngang chiều thường, giống CameraSource
                 val rot = (display?.rotation ?: Surface.ROTATION_90).let { if (it == Surface.ROTATION_0) Surface.ROTATION_90 else it }
@@ -1273,6 +1289,19 @@ private fun RoadModePicker(runner: Runner) {
     }
 }
 
+// Vùng capo che đáy khung: 3 mức 5 / 10 / 15%
+private val HOOD_STEPS = floatArrayOf(0.05f, 0.10f, 0.15f)
+
+@Composable
+private fun HoodPicker(runner: Runner) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+        RowTitle("Che vùng capo")
+        val sel = HOOD_STEPS.indices.minByOrNull { abs(HOOD_STEPS[it] - runner.hoodCut) } ?: 2
+        Segmented(listOf("5%", "10%", "15%"), sel) { runner.hoodCut = HOOD_STEPS[it]; runner.savePrefs() }
+        Desc("Phần đáy khung bị capo/taplo che: không nhận diện, không cảnh báo. Chọn mức cho vạch trắng nằm sát mép capo.", top = 6)
+    }
+}
+
 // Ô chọn nguồn camera (dạng nút phân đoạn)
 @Composable
 private fun SourcePicker(runner: Runner) {
@@ -1339,9 +1368,7 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             RowLine(); NavRow("Thử âm báo", onClick = { runner.testSound() })
             RowLine(); NavRow("Xem lại cảnh báo", desc = "Ảnh 2 s trước và sau mỗi lần cảnh báo; đánh dấu đúng / nhầm để chỉnh ngưỡng.", onClick = onReview)
             RowLine(); RoadModePicker(runner)
-            RowLine(); SliderRow("Che vùng capo", "${(runner.hoodCut * 100).roundToInt()}%", runner.hoodCut, 0f..0.45f,
-                "0%", "45%", "Phần đáy khung bị capo/taplo che: không nhận diện, không cảnh báo. Kéo cho vạch trắng nằm ngay mép capo. Mặc định 15%.",
-                onChange = { runner.hoodCut = it }, onDone = { runner.savePrefs() })
+            RowLine(); HoodPicker(runner)
         }
 
         SectionTitle("Bản đồ HERE")
@@ -1680,7 +1707,9 @@ class MainActivity : ComponentActivity() {
                             Modifier.aspectRatio(runner.frameAspect)
                                 .then(if (runner.reflect) Modifier.graphicsLayer { scaleX = -1f } else Modifier)
                         ) {
-                            if (runner.gpuPreview && runner.camKind == CamKind.PHONE) CameraTexture(runner, Modifier.fillMaxSize())
+                            // Camera điện thoại và webcam USB đều vẽ hình qua GPU; key: đổi nguồn thì tạo lại (cách xoay khác nhau)
+                            if (runner.gpuPreview && (runner.camKind == CamKind.PHONE || runner.camKind == CamKind.USB))
+                                key(runner.camKind) { CameraTexture(runner, Modifier.fillMaxSize(), rotate = runner.camKind == CamKind.PHONE) }
                             FrameView(runner, Modifier.fillMaxSize(), ContentScale.FillBounds)
                             HudOverlay(runner, Modifier.fillMaxSize())
                         }
