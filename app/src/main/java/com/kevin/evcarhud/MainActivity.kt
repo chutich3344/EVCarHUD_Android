@@ -122,6 +122,8 @@ private const val AUTO_SIGN = 1f        // đổi thành -1f nếu chân trời 
 private const val WARMUP = 40           // số lần suy luận đầu không tự chỉnh
 private const val AUTO_MIN_SPEED = 5.5f // m/s (~20 km/h): chỉ tự chỉnh khi đủ nhanh (chạy trong phố cũng chỉnh được)
 private const val STEP_US = 50_000L     // model được huấn luyện với bước đúng 50 ms (20 Hz)
+private const val DIM_STILL_MS = 20_000L  // đứng yên bao lâu thì giảm sáng màn hình
+private const val DIM_BRIGHTNESS = 0.08f  // độ sáng khi giảm (0..1)
 private const val SPEED_EMA = 0.9f      // làm mượt tốc độ hiển thị
 private const val THERMAL_POLL_MS = 2000L
 private const val STATUS_MS = 500L      // chu kỳ cập nhật dòng trạng thái (đỡ recomposition + log)
@@ -244,6 +246,9 @@ class Runner(private val ctx: Context) {
     // CPU không phải đổi YUV -> RGB và vẽ HUD lên bitmap mỗi khung nữa (nguồn nóng chính theo nhật ký nhiệt)
     var gpuPreview by mutableStateOf(prefs.getBoolean("gpuPreview", true))
     @Volatile var previewTexture: SurfaceTexture? = null
+    // Xe đứng yên quá 20 s: giảm độ sáng màn hình cho mát máy (màn hình là nguồn nóng lớn); xe chạy hoặc có cảnh báo là sáng lại
+    var dimStill by mutableStateOf(prefs.getBoolean("dimStill", true))
+    var dimNow by mutableStateOf(false)
     var previewing by mutableStateOf(false)
     var frameAspect by mutableStateOf(16f / 9f)
     @Volatile var hudSink: ((Picture?) -> Unit)? = null
@@ -283,7 +288,8 @@ class Runner(private val ctx: Context) {
             .putInt("alertSound", alertSound).putBoolean("collect", collectData).putString("hereKey", hereKey.trim())
             .putFloat("camH", camH).putBoolean("reflect", reflect)
             .putInt("navVehicle", navVehicle).putBoolean("miniMap", miniMap)
-            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).apply()
+            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview)
+            .putBoolean("dimStill", dimStill).apply()
         here.apiKey = hereKey
         nav.apiKey = hereKey
         nav.vehicle = if (navVehicle == 1) "scooter" else "car"
@@ -713,6 +719,7 @@ class Runner(private val ctx: Context) {
         var overSince = -1L       // bắt đầu vượt tốc độ (ms)
         var overSaid = -1_000_000L
         idle = false
+        dimNow = false
         while (run.alive) {
             val job = frameQ.poll(100, TimeUnit.MILLISECONDS)
             if (job == null) {
@@ -856,6 +863,8 @@ class Runner(private val ctx: Context) {
             // Đứng yên hơn 3 s: giảm tải
             if (logWarn < 2f) { if (stillSince < 0L) stillSince = nowMs; idle = nowMs - stillSince > 3000L }
             else { stillSince = -1L; idle = false }
+            val dim = live && stillSince >= 0L && nowMs - stillSince > DIM_STILL_MS && nowMs >= alertUntil && nowMs >= cautionUntil
+            if (dimNow != dim) dimNow = dim
             val alert = warnOn && nowMs < alertUntil
             val cautionNow = warnOn && !alert && nowMs < cautionUntil
             if (cautionOn != cautionNow) cautionOn = cautionNow
@@ -1421,6 +1430,8 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
         SectionTitle("Hiệu năng")
         SettingsCard {
             SwitchRow("Tự giảm tải khi nóng", "Giãn nhịp YOLO và NPU theo nhiệt độ máy.", runner.thermalAuto) { runner.thermalAuto = it }
+            RowLine(); SwitchRow("Giảm sáng khi đứng yên", "Xe dừng quá 20 giây thì màn hình tối bớt cho mát máy. Xe chạy hoặc có cảnh báo là sáng lại ngay.",
+                runner.dimStill) { runner.dimStill = it; runner.savePrefs() }
             RowLine(); SliderRow("Nhiệt độ mục tiêu", "${runner.coolTarget.roundToInt()}°C", runner.coolTarget, 35f..45f,
                 "35°C", "45°C",
                 "Pin gần tới mức này thì app giãn nhịp YOLO trước, vượt quá thì hạ NPU còn 10 Hz. Đặt thấp thì máy mát hơn nhưng hộp nhận diện cập nhật chậm hơn. " +
@@ -1661,6 +1672,14 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.OpenDocument()
                 ) { uri -> if (uri != null) pendingVideo = uri else runner.cancelPick() }
                 val land = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+                // Đứng yên lâu: hạ độ sáng màn hình (chỉ trong app, không đổi cài đặt máy)
+                val dimScreen = runner.dimStill && runner.dimNow && runner.running
+                LaunchedEffect(dimScreen) {
+                    val a = window.attributes
+                    a.screenBrightness = if (dimScreen) DIM_BRIGHTNESS else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    window.attributes = a
+                }
 
                 // Xoay ngang: ẩn thanh hệ thống (vuốt mép để gọi lại), video chiếm toàn màn hình
                 SideEffect {

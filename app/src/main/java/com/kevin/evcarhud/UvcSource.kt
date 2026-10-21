@@ -13,6 +13,7 @@ import android.os.SystemClock
 import android.view.Surface
 import android.util.Log
 import com.serenegiant.usb.IFrameCallback
+import com.serenegiant.usb.Size
 import com.serenegiant.usb.USBMonitor
 import com.serenegiant.usb.UVCCamera
 import java.nio.ByteBuffer
@@ -55,7 +56,9 @@ class UvcSource(
     @Volatile private var cbCount = 0      // số lần thư viện gọi onFrame
     @Volatile private var dropCount = 0    // khung bỏ vì kích thước không khớp
     @Volatile private var stage = "chưa mở"
-    fun info() = "webcam $stage ${width}x$height, nhận $cbCount khung, bỏ $dropCount"
+    @Volatile private var fmt = ""
+    private var vu = ByteArray(0)   // đệm chép nguyên khối VU (đọc từng byte qua ByteBuffer chậm hơn nhiều)
+    fun info() = "webcam $stage ${width}x$height $fmt, nhận $cbCount khung, bỏ $dropCount"
 
     var width = 0
         private set
@@ -161,24 +164,34 @@ class UvcSource(
         if (r != 0) { cam.destroy(); throw IllegalStateException("Không mở được camera USB (mã $r)") }
         camera = cam
         val sizes = cam.supportedSizeList
-        // Giảm nhiệt: MJPEG nhỏ nhất rộng từ 640 (ưu tiên 16:9, rồi 4:3), 15 hình/s (đủ cho NPU tối đa 20 lần/s
-        // sau khi đã hạ nhịp vì nhiệt); giải nén MJPEG chạy trên CPU nên khung càng nhỏ càng mát
-        val mjpeg = sizes.filter { it.type == UVCCamera.UVC_VS_FRAME_MJPEG && it.width in 640..1280 }
-        fun ratio(a: Int, b: Int) = mjpeg.filter { abs(it.width * b - it.height * a) <= a }.minByOrNull { it.width * it.height }
-        val pick = ratio(16, 9) ?: ratio(4, 3) ?: mjpeg.minByOrNull { it.width * it.height }
-        if (pick != null) {
-            val fl = pick.fpsList ?: emptyList()
-            val fps = when {
+        // Giảm nhiệt: ưu tiên khung KHÔNG NÉN (YUYV) rộng 640, vì MJPEG phải giải nén trên CPU từng khung.
+        // Webcam không có YUYV 640 đủ 15 hình/s (hoặc đặt không được) thì dùng MJPEG nhỏ nhất rộng 640..1280 như trước.
+        // Thứ tự ưu tiên tỉ lệ: 16:9 rồi 4:3; nhịp 15 hình/s (đủ cho NPU tối đa 20 lần/s sau khi đã hạ nhịp vì nhiệt)
+        fun fpsOf(z: Size): Int {
+            val fl = z.fpsList ?: emptyList()
+            return when {
                 15 in fl -> 15
-                fl.any { it >= 15 } -> fl.filter { it >= 15 }.minOrNull() ?: pick.fps
-                else -> pick.fps
+                fl.any { it >= 15 } -> fl.filter { it >= 15 }.minOrNull() ?: z.fps
+                else -> z.fps
             }
-            try { cam.setPreviewSize(pick.width, pick.height, UVCCamera.UVC_VS_FRAME_MJPEG, fps) }
-            catch (e: Throwable) { Log.w(UTAG, "không đặt được ${pick.width}x${pick.height}@$fps, dùng mặc định", e) }
+        }
+        fun pick(type: Int, maxW: Int): Size? {
+            val c = sizes.filter { it.type == type && it.width in 640..maxW }
+            fun ratio(a: Int, b: Int) = c.filter { abs(it.width * b - it.height * a) <= a }.minByOrNull { it.width * it.height }
+            return ratio(16, 9) ?: ratio(4, 3) ?: c.minByOrNull { it.width * it.height }
+        }
+        val raw = pick(UVCCamera.UVC_VS_FRAME_UNCOMPRESSED, 640)?.takeIf { fpsOf(it) >= 15 }
+        val mj = pick(UVCCamera.UVC_VS_FRAME_MJPEG, 1280)
+        var set = false
+        for (z in listOfNotNull(raw, mj)) {
+            if (set) break
+            try { cam.setPreviewSize(z.width, z.height, z.type, fpsOf(z)); set = true }
+            catch (e: Throwable) { Log.w(UTAG, "không đặt được ${z.width}x${z.height} type=${z.type}@${fpsOf(z)}", e) }
         }
         val s = cam.previewSize
         width = s.width
         height = s.height
+        fmt = if (s.type == UVCCamera.UVC_VS_FRAME_UNCOMPRESSED) "YUYV" else "MJPEG"
         Log.d(UTAG, "camera USB ${width}x$height type=${s.type} fps=${s.fps}")
         cam.setFrameCallback(IFrameCallback { buf -> onFrame(buf) }, UVCCamera.PIXEL_FORMAT_NV21)
         // Webcam mở được nhưng 0 khung khi không có bề mặt hiển thị (đo trên OPPO Find X8 Ultra).
@@ -234,10 +247,13 @@ class UvcSource(
             val n = cw * ch
             val u = f.uArr
             val v = f.vArr
-            var i = p + ySize
+            if (vu.size != 2 * n) vu = ByteArray(2 * n)
+            val t = vu
+            buf.get(t, 0, 2 * n)
+            var i = 0
             for (k in 0 until n) {
-                v[k] = buf.get(i)
-                u[k] = buf.get(i + 1)
+                v[k] = t[i]
+                u[k] = t[i + 1]
                 i += 2
             }
             buf.position(p)

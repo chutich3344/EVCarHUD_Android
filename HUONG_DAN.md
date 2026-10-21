@@ -221,12 +221,14 @@ File sửa: `MainActivity.kt`, `ThermalLog.kt`.
 - (21/10 tối) Số tốc độ bám vạch capo; biển giới hạn to hơn, đứng cố định không nhảy theo số khoảng cách; giờ / thời tiết / trạng thái nhích lên.
 - "Che vùng capo" chỉ còn 3 mức 5 / 10 / 15%.
 - Góc trái dưới (trên vạch capo): CPU °C · PIN °C · NPU lần/s · YOLO lần/s, đỏ khi CPU từ 70°C. Android không cho đọc nhiệt RAM.
+- Cài đặt › Hiệu năng › **Giảm sáng khi đứng yên** (bật sẵn): xe dừng quá 20 giây thì màn hình tối bớt; xe chạy hoặc có cảnh báo là sáng lại.
+- Cài đặt › Thông tin › **Lưu nhật ký vào Download**: chép file nhật ký nhiệt mới nhất vào Download/EVCarHUD.
 - Webcam USB: 640 px rộng, 15 hình/s, hình vẽ thẳng lên màn hình qua GPU (CPU không đổi màu từng khung) để mát máy.
 - Ô bản đồ chỉ đường có nền bản đồ thật của HERE (kiểu đêm, nhuộm xanh), quay theo hướng đi. Mỗi ô ảnh 256 px tải một lần (tính một lượt gọi HERE), app giữ 48 ô gần nhất trong bộ nhớ. Không có key thì vẫn là nền tối như cũ.
 ## Webcam / camera USB qua OTG (21/10)
 File: `UvcSource.kt` (mới), `MainActivity.kt`, `app/build.gradle.kts` (thêm thư viện `com.herohan:UVCAndroid:1.0.13` từ Maven Central).
 - Cài đặt › Nguồn camera › **USB (OTG)**. Máy nào đưa camera USB vào Camera2 thì dùng Camera2, không thì app đọc thẳng chuẩn UVC.
 - Lần đầu cắm, Android hỏi "Cho phép EVCarHUD truy cập thiết bị USB": bấm Cho phép (nên tick "luôn dùng").
-- App chọn MJPEG 1280x720 nếu webcam có, 30 hình/giây. Webcam không xoay theo màn hình: gắn sao cho hình thẳng.
+- App ưu tiên khung không nén YUYV 640 px, 15 hình/giây (không phải giải nén trên CPU); webcam không có thì dùng MJPEG nhỏ nhất từ 640 px. Thông báo camera treo ghi rõ đang dùng YUYV hay MJPEG. Webcam không xoay theo màn hình: gắn sao cho hình thẳng.
 - Đặt "FOV ngang camera" đúng góc của webcam (thường 60–80°).
 - Sạc cùng lúc: dùng hub OTG có cổng cấp nguồn (PD). Android Auto lúc đó phải dùng không dây.
