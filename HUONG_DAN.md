@@ -219,3 +219,10 @@ File sửa: `MainActivity.kt`, `ThermalLog.kt`.
 - Biển giới hạn tốc độ nằm bên phải số khoảng cách; biển STOP / đèn giao thông camera vừa thấy hiện ngay dưới nó 4 giây.
 - Tốc độ chữ đậm hơn, canh giữa thẳng cột với khoảng cách, "km/h" bên phải số, sát vạch capo.
 - Ô bản đồ chỉ đường có nền bản đồ thật của HERE (kiểu đêm, nhuộm xanh), quay theo hướng đi. Mỗi ô ảnh 256 px tải một lần (tính một lượt gọi HERE), app giữ 48 ô gần nhất trong bộ nhớ. Không có key thì vẫn là nền tối như cũ.
+## Webcam / camera USB qua OTG (21/10)
+File: `UvcSource.kt` (mới), `MainActivity.kt`, `app/build.gradle.kts` (thêm thư viện `com.herohan:UVCAndroid:1.0.13` từ Maven Central).
+- Cài đặt › Nguồn camera › **USB (OTG)**. Máy nào đưa camera USB vào Camera2 thì dùng Camera2, không thì app đọc thẳng chuẩn UVC.
+- Lần đầu cắm, Android hỏi "Cho phép EVCarHUD truy cập thiết bị USB": bấm Cho phép (nên tick "luôn dùng").
+- App chọn MJPEG 1280x720 nếu webcam có, 30 hình/giây. Webcam không xoay theo màn hình: gắn sao cho hình thẳng.
+- Đặt "FOV ngang camera" đúng góc của webcam (thường 60–80°).
+- Sạc cùng lúc: dùng hub OTG có cổng cấp nguồn (PD). Android Auto lúc đó phải dùng không dây.
