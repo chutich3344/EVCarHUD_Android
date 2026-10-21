@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <external-files-path name="thermal" path="thermal/" />
+    <files-path name="thermal_int" path="thermal/" />
+</paths>
