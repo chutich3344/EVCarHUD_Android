@@ -1421,8 +1421,11 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
         SettingsCard {
             NavRow("Trạng thái hoạt động", desc = runner.status)
             if (runner.thermalLine.isNotEmpty()) { RowLine(); NavRow("Nhiệt độ", desc = runner.thermalLine) }
-            RowLine(); NavRow("Nhật ký nhiệt", desc = runner.thermalLog.file?.let { "${runner.thermalLog.rows} dòng (10 s/dòng): ${it.absolutePath}" }
-                ?: "Ghi mỗi 10 s khi app chạy, vào ${runner.thermalLog.dir.absolutePath}")
+            val shareCtx = LocalContext.current
+            RowLine(); NavRow("Nhật ký nhiệt", desc = (runner.thermalLog.file?.let { "${runner.thermalLog.rows} dòng (10 s/dòng): ${it.name}" }
+                ?: "Ghi mỗi 10 s khi app chạy.") + " Bấm để gửi file qua Zalo, Gmail, Drive...") {
+                if (!runner.thermalLog.share(shareCtx)) runner.status = "Chưa có file nhật ký nhiệt"
+            }
             if (runner.lastExit.isNotEmpty()) { RowLine(); NavRow("Lần thoát trước", desc = runner.lastExit) }
             RowLine(); NavRow("GPS", desc = runner.gps.statusText())
         }
