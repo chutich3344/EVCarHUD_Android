@@ -42,6 +42,11 @@ class UvcSource(
     private var t0 = -1L
     private var lastNs = -1L
 
+    @Volatile private var cbCount = 0      // số lần thư viện gọi onFrame
+    @Volatile private var dropCount = 0    // khung bỏ vì kích thước không khớp
+    @Volatile private var stage = "chưa mở"
+    fun info() = "webcam $stage ${width}x$height, nhận $cbCount khung, bỏ $dropCount"
+
     var width = 0
         private set
     var height = 0
@@ -103,6 +108,7 @@ class UvcSource(
                     if (device.deviceName == dev.deviceName) fail(IllegalStateException("Camera USB đã bị rút ra"))
                 }
                 override fun onDeviceOpen(device: UsbDevice, ctrlBlock: USBMonitor.UsbControlBlock, createNew: Boolean) {
+                    stage = "đang mở"
                     try {
                         startCamera(ctrlBlock)
                     } catch (e: Throwable) {
@@ -120,6 +126,7 @@ class UvcSource(
             }, hd)
             monitor = m
             m.register()
+            stage = "chờ quyền USB"
             m.requestPermission(dev)   // đã có quyền thì mở ngay, chưa có thì Android hiện hộp thoại hỏi
         }
         // Chờ người dùng bấm Cho phép (tối đa 60 s)
@@ -158,17 +165,22 @@ class UvcSource(
         Log.d(UTAG, "camera USB ${width}x$height type=${s.type} fps=${s.fps}")
         cam.setFrameCallback(IFrameCallback { buf -> onFrame(buf) }, UVCCamera.PIXEL_FORMAT_NV21)
         cam.startPreview()
+        stage = "đã chạy"
     }
 
     // NV21: Y (w*h) rồi VU xen kẽ (w*h/2). Tách ra U, V riêng (uvPix = 1) như các nguồn khác
     private fun onFrame(buf: ByteBuffer) {
         val w = width
         val h = height
-        if (w <= 0 || h <= 0) return
+        cbCount++
+        if (w <= 0 || h <= 0) { dropCount++; return }
         val ySize = w * h
         val cw = w / 2
         val ch = h / 2
-        if (buf.remaining() < ySize + cw * ch * 2) return
+        if (buf.remaining() < ySize + cw * ch * 2) {
+            if (dropCount++ % 30 == 0) Log.w(UTAG, "khung ${buf.remaining()} byte, cần ${ySize + cw * ch * 2}")
+            return
+        }
         val now = System.nanoTime()
         if (t0 < 0) t0 = now
         if (lastNs > 0) frameUs = (frameUs * 7 + (now - lastNs) / 1000) / 8
@@ -251,21 +263,25 @@ class UvcSource(
 class UsbCamSource(private val context: Context, private val alive: () -> Boolean) : FrameSource {
     private var src: FrameSource? = null
     override val frameUs: Long get() = src?.frameUs ?: 33_333L
+    fun info(): String = (src as? UvcSource)?.info() ?: if (src is CameraSource) "camera ngoài qua Camera2" else ""
 
     override fun open() {
         val uvc = UvcSource(context, alive)
+        src = uvc
         try {
             uvc.open()
-            src = uvc
             return
         } catch (e: Throwable) {
+            // Chỉ chuyển sang Camera2 khi danh sách USB không có webcam mà máy lại có camera ngoài;
+            // lỗi khác (quyền, mở thất bại) thì báo thẳng để biết nguyên nhân
+            val notFound = e.message?.startsWith("Không thấy camera USB") == true
+            if (!alive() || !notFound || !CameraSource.hasExternal(context)) throw e
             try { uvc.release() } catch (_: Throwable) {}
-            if (!alive() || !CameraSource.hasExternal(context)) throw e
-            Log.w(UTAG, "UVC không mở được, thử Camera2 camera ngoài", e)
+            Log.w(UTAG, "không thấy webcam qua USB, thử Camera2 camera ngoài", e)
         }
         val cam = CameraSource(context, external = true, alive = alive)
-        cam.open()
         src = cam
+        cam.open()
     }
 
     override fun nextFrame(minPtsUs: Long, dst: YuvFrame): Boolean = src?.nextFrame(minPtsUs, dst) ?: false

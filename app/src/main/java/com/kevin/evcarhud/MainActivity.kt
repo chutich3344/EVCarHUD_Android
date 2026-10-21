@@ -707,7 +707,7 @@ class Runner(private val ctx: Context) {
                 // Tạm nghỉ làm mát: luồng A cố ý không đẩy khung, không phải camera treo (trước đây bị mở lại camera liên tục)
                 if (coolPause) { lastFrameAt = SystemClock.elapsedRealtime(); continue }
                 if (live && SystemClock.elapsedRealtime() - lastFrameAt > STALL_MS) {
-                    status = "Camera treo, đang mở lại..."
+                    status = "Camera treo, đang mở lại..." + ((curSrc as? UsbCamSource)?.info()?.let { " ($it)" } ?: "")
                     break
                 }
                 continue
