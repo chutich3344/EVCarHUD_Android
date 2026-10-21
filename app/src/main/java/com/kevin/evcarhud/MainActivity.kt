@@ -939,8 +939,9 @@ class Runner(private val ctx: Context) {
         if (!live) return VideoDecoder(ctx, uri!!)
         return when (camKind) {
             CamKind.PHONE -> CameraSource(ctx) { run.alive }.also { if (gpuPreview) it.previewTexture = previewTexture }
-            // Camera USB qua Camera2 (chỉ máy nào hỗ trợ sẵn). Thư viện UVC tạm bỏ vì chưa tải được từ JitPack.
-            CamKind.USB -> CameraSource(ctx, external = true) { run.alive }
+            // Camera USB: máy đưa vào Camera2 thì dùng Camera2, không thì đọc thẳng chuẩn UVC (webcam, module camera USB)
+            CamKind.USB -> if (CameraSource.hasExternal(ctx)) CameraSource(ctx, external = true) { run.alive }
+                           else UvcSource(ctx) { run.alive }
             CamKind.WIFI -> NetStreamSource(ctx, streamUrl.trim()) { run.alive }
         }
     }
