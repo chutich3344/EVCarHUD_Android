@@ -1,0 +1,56 @@
+# Tự build APK mỗi lần đẩy code, rồi đặt vào Release "apk" để tải thẳng trên điện thoại:
+# https://github.com/chutich3344/EVCarHUD_Android/releases/download/apk/EVCarHUD.apk
+# Model .onnx quá lớn cho git: tải lên Release "models" một lần, bước build lấy về assets.
+name: Build APK
+
+on:
+  push:
+    branches: [main, claude/hud-layout]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Lấy model từ Release "models"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p app/src/main/assets
+          if ! gh release download models --repo "$GITHUB_REPOSITORY" --dir app/src/main/assets --clobber; then
+            echo "::error::Chưa có Release 'models'. Tạo Release tag 'models' và đính kèm big_driving_supercombo.onnx, yolo_det.onnx (và yolo_labels.txt nếu có)."
+            exit 1
+          fi
+          ls -la app/src/main/assets
+
+      - name: Build
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Đưa APK lên Release "apk"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk EVCarHUD.apk
+          NOTE="Bản build từ nhánh ${GITHUB_REF_NAME}, commit ${GITHUB_SHA::7}, lúc $(TZ=Asia/Ho_Chi_Minh date '+%H:%M %d/%m/%Y')"
+          if gh release view apk --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit apk --repo "$GITHUB_REPOSITORY" --notes "$NOTE"
+          else
+            gh release create apk --repo "$GITHUB_REPOSITORY" --title "APK mới nhất" --notes "$NOTE" --prerelease
+          fi
+          gh release upload apk EVCarHUD.apk --repo "$GITHUB_REPOSITORY" --clobber
