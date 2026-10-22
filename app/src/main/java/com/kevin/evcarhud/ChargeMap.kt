@@ -54,6 +54,8 @@ import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.ln
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.tan
@@ -103,6 +105,7 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
     private val labelRim = Paint(label).apply { style = Paint.Style.STROKE; color = 0xCC000000.toInt() }
     private val path = Path()
     private val dst = RectF()
+    private val src = android.graphics.Rect()
 
     private fun gx(lon: Double, world: Double) = (lon + 180.0) / 360.0 * world
     private fun gy(lat: Double, world: Double): Double {
@@ -112,7 +115,7 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
 
     // Kết quả: các trạm đã vẽ (toạ độ màn hình) để bấm chọn
     fun draw(c: Canvas, w: Float, h: Float, cLat: Double, cLon: Double, z: Double, rotDeg: Float, ox: Float, oy: Float,
-             sat: Boolean, stations: List<Chargers.St>, sel: Chargers.St?, ego: Triple<Double, Double, Double?>?): List<Hit> {
+             sat: Boolean, traffic: Boolean, stations: List<Chargers.St>, sel: Chargers.St?, ego: Triple<Double, Double, Double?>?): List<Hit> {
         c.drawRect(0f, 0f, w, h, bg)
         val zt = floor(z).toInt().coerceIn(3, 19)
         val world = 256.0 * (1 shl zt)
@@ -126,15 +129,51 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
         c.save()
         c.translate(ox, oy)
         c.rotate(-rotDeg)
-        val reach = hypot(w.toDouble(), h.toDouble()) / sc
+        // Chỉ lấy các ô thật sự nằm trên màn hình (không quay: đúng khung; có quay: vòng tròn phủ khung)
         val n = 1 shl zt
-        val tx0 = floor((cgx - reach) / 256.0).toInt(); val tx1 = floor((cgx + reach) / 256.0).toInt()
-        val ty0 = floor((cgy - reach) / 256.0).toInt(); val ty1 = floor((cgy + reach) / 256.0).toInt()
-        for (ty in ty0..ty1) for (tx in tx0..tx1) {
-            if (ty < 0 || ty >= n) continue
-            val b = nav.mapTile(zt, ((tx % n) + n) % n, ty, sat) ?: continue
+        val ex0: Double; val ex1: Double; val ey0: Double; val ey1: Double
+        if (rotDeg == 0f) { ex0 = ox / sc; ex1 = (w - ox) / sc; ey0 = oy / sc; ey1 = (h - oy) / sc }
+        else { val r = hypot(max(ox, w - ox).toDouble(), max(oy, h - oy).toDouble()) / sc; ex0 = r; ex1 = r; ey0 = r; ey1 = r }
+        val tx0 = floor((cgx - ex0) / 256.0).toInt(); val tx1 = floor((cgx + ex1) / 256.0).toInt()
+        val ty0 = floor((cgy - ey0) / 256.0).toInt(); val ty1 = floor((cgy + ey1) / 256.0).toInt()
+        // Ô gần tâm xin tải trước
+        val order = ArrayList<Long>()
+        for (ty in max(0, ty0)..min(n - 1, ty1)) for (tx in tx0..tx1) order.add((tx.toLong() shl 32) or ty.toLong())
+        val ctx0 = cgx / 256.0 - 0.5; val cty0 = cgy / 256.0 - 0.5
+        order.sortBy { val tx = (it shr 32).toInt(); val ty = it.toInt(); hypot(tx - ctx0, ty - cty0) }
+        val sz = (256.0 * sc).toFloat()
+        for (o in order) {
+            val tx = (o shr 32).toInt(); val ty = o.toInt(); val wx = ((tx % n) + n) % n
             val l = ((tx * 256.0 - cgx) * sc).toFloat(); val t = ((ty * 256.0 - cgy) * sc).toFloat()
-            val sz = (256.0 * sc).toFloat()
+            dst.set(l, t, l + sz + 0.5f, t + sz + 0.5f)
+            val b = nav.mapTile(zt, wx, ty, sat)
+            if (b != null) c.drawBitmap(b, null, dst, tileP)
+            else {
+                // Ô chưa tải: phóng tạm phần tương ứng của ô mức thấp hơn (như Google Maps, mờ một chút rồi nét lại)
+                var got = false
+                for (d in 1..4) {
+                    if (zt - d < 3) break
+                    val p = nav.cachedMapTile(zt - d, wx shr d, ty shr d, sat) ?: continue
+                    val part = 256 shr d
+                    val px = (wx and ((1 shl d) - 1)) * part; val py = (ty and ((1 shl d) - 1)) * part
+                    src.set(px * p.width / 256, py * p.height / 256, (px + part) * p.width / 256, (py + part) * p.height / 256)
+                    c.drawBitmap(p, src, dst, tileP)
+                    got = true
+                    break
+                }
+                // vừa thu nhỏ: ghép 4 ô mức cao hơn đã có
+                if (!got && zt < 19) for (q in 0..3) {
+                    val cb = nav.cachedMapTile(zt + 1, wx * 2 + (q and 1), ty * 2 + (q shr 1), sat) ?: continue
+                    val hz = sz / 2f; val ql = l + (q and 1) * hz; val qt = t + (q shr 1) * hz
+                    dst.set(ql, qt, ql + hz + 0.5f, qt + hz + 0.5f)
+                    c.drawBitmap(cb, null, dst, tileP)
+                }
+            }
+        }
+        if (traffic) for (o in order) {
+            val tx = (o shr 32).toInt(); val ty = o.toInt()
+            val b = nav.trafficTile(zt, ((tx % n) + n) % n, ty) ?: continue
+            val l = ((tx * 256.0 - cgx) * sc).toFloat(); val t = ((ty * 256.0 - cgy) * sc).toFloat()
             dst.set(l, t, l + sz + 0.5f, t + sz + 0.5f)
             c.drawBitmap(b, null, dst, tileP)
         }
@@ -233,6 +272,7 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
     val tick by produceState(0) { while (true) { delay(100); value++ } }
     var kwIdx by rememberSaveable { mutableStateOf(0) }
     var sat by rememberSaveable { mutableStateOf(false) }
+    var traffic by rememberSaveable { mutableStateOf(false) }
     var tilt by rememberSaveable { mutableStateOf(false) }
     var zoom by rememberSaveable { mutableStateOf(14.5) }
     var follow by rememberSaveable { mutableStateOf(true) }
@@ -280,7 +320,7 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
             val oy = if (navOn && follow) size.height * 0.72f else size.height * 0.5f
             drawIntoCanvas { cv ->
                 hitsRef[0] = draw.draw(cv.nativeCanvas, size.width, size.height, cLat, cLon, zoom, rotDeg, size.width / 2f, oy,
-                    sat, shown, sel, egoLl)
+                    sat, traffic, shown, sel, egoLl)
             }
         }
 
@@ -324,6 +364,7 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
         Column(Modifier.align(Alignment.CenterEnd).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Column(Modifier.clip(RoundedCornerShape(26.dp)).background(Color(0xF00E202C))) {
                 MapBtn(if (sat) "Vệ\ntinh" else "Bản\nđồ", false, 12) { sat = !sat }
+                MapBtn("Giao\nthông", traffic, 11) { traffic = !traffic }
                 MapBtn("3D", tilt, 16) { tilt = !tilt }
                 MapBtn("◎", follow, 22) { follow = true; if (!navOn) zoom = 14.5 }
             }

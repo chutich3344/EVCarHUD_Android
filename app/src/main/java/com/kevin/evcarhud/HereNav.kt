@@ -432,12 +432,15 @@ class HereNav(private val gps: LocationFallback) {
 
     // ---------- Nền bản đồ: ô ảnh HERE Raster Tile v3 kiểu lite.night, nhuộm xanh, quay theo hướng tuyến ----------
     // Mỗi ô 256 px tải một lần rồi giữ trong bộ nhớ (tối đa TILE_MAX ô); mỗi ô tải về tính một lượt gọi API.
-    private val tileExec = Executors.newSingleThreadExecutor()
+    // 4 luồng tải song song (1 luồng làm bản đồ trang 2 tải chậm, phóng to / thu nhỏ phải chờ vài giây)
+    private val tileExec = Executors.newFixedThreadPool(4)
     private val tiles = object : LinkedHashMap<Long, Bitmap>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Bitmap>?) = size > TILE_MAX
     }
     private val tileWait = HashSet<Long>()
     private var tileFailAt = 0L
+    private var tileFails = 0
+    private val trafficAt = HashMap<Long, Long>()   // lúc tải ô giao thông, quá 5 phút thì tải lại
     private val tileP = Paint(Paint.FILTER_BITMAP_FLAG).apply {
         // độ sáng -> xanh ngọc: nền tối gần đen-xanh, đường sáng thành xanh nhạt
         colorFilter = ColorMatrixColorFilter(ColorMatrix(floatArrayOf(
@@ -453,37 +456,57 @@ class HereNav(private val gps: LocationFallback) {
     // Trang Bản đồ (toàn màn hình): ô kiểu explore.night hoặc ảnh vệ tinh, không nhuộm. Mỗi ô mới tải = 1 lượt gọi HERE
     fun mapTile(z: Int, x: Int, y: Int, sat: Boolean): Bitmap? = tile(z, x, y, if (sat) 2 else 1)
 
-    // style: 0 = lite.night (bản đồ nhỏ trên HUD), 1 = explore.night, 2 = satellite.day
+    // Lớp giao thông (HERE Traffic flow, ảnh trong suốt phủ lên bản đồ). Mỗi ô cũng tính một lượt gọi API
+    fun trafficTile(z: Int, x: Int, y: Int): Bitmap? = tile(z, x, y, 3)
+
+    // Chỉ lấy ô đã có trong bộ nhớ, không tải: vẽ tạm ô mức thấp hơn (phóng to) trong lúc ô đúng mức đang tải
+    fun cachedMapTile(z: Int, x: Int, y: Int, sat: Boolean): Bitmap? =
+        synchronized(tiles) { tiles[tileKey(z, x, y, if (sat) 2 else 1)] }
+
+    // style: 0 = lite.night (bản đồ nhỏ trên HUD), 1 = explore.night, 2 = satellite.day, 3 = giao thông
     private fun tile(z: Int, x: Int, y: Int, style: Int = 0): Bitmap? {
         val key = tileKey(z, x, y, style)
         synchronized(tiles) {
-            tiles[key]?.let { return it }
+            val have = tiles[key]
+            val now = SystemClock.elapsedRealtime()
+            if (have != null && (style != 3 || now - (trafficAt[key] ?: 0L) < 300_000L)) return have
             val k = apiKey.trim()
-            if (k.isEmpty() || key in tileWait || tileWait.size >= 8) return null
-            if (SystemClock.elapsedRealtime() - tileFailAt < 15_000L) return null
+            if (k.isEmpty() || key in tileWait || tileWait.size >= 24) return have
+            if (tileFails >= 3 && now - tileFailAt < 5_000L) return have
             tileWait.add(key)
             tileExec.execute {
                 var bmp: Bitmap? = null
                 try {
-                    val fmt = when (style) { 1 -> "png8?style=explore.night"; 2 -> "jpeg?style=satellite.day"; else -> "png8?style=lite.night" }
-                    val c = URL(String.format(Locale.US, "%s/%d/%d/%d/%s&apiKey=%s", TILE, z, x, y, fmt, enc(k)))
-                        .openConnection() as HttpURLConnection
-                    try {
-                        c.connectTimeout = 6000
-                        c.readTimeout = 8000
-                        calls++
-                        if (c.responseCode == 200) bmp = c.inputStream.use { BitmapFactory.decodeStream(it) }
-                        else Log.w("HereNav", "tile HTTP ${c.responseCode}")
-                    } finally { c.disconnect() }
+                    val url = if (style == 3) String.format(Locale.US, "%s/%d/%d/%d/png?apiKey=%s", TRAFFIC_TILE, z, x, y, enc(k))
+                    else {
+                        val fmt = when (style) { 1 -> "png8?style=explore.night"; 2 -> "jpeg?style=satellite.day"; else -> "png8?style=lite.night" }
+                        String.format(Locale.US, "%s/%d/%d/%d/%s&apiKey=%s", TILE, z, x, y, fmt, enc(k))
+                    }
+                    val c = URL(url).openConnection() as HttpURLConnection
+                    // không gọi disconnect(): giữ kết nối để ô sau dùng lại, khỏi bắt tay TLS mỗi ô
+                    c.connectTimeout = 6000
+                    c.readTimeout = 8000
+                    calls++
+                    if (c.responseCode == 200) {
+                        // ô trang bản đồ không cần độ trong suốt: RGB_565 tốn một nửa bộ nhớ
+                        val opt = BitmapFactory.Options().apply { if (style == 1 || style == 2) inPreferredConfig = Bitmap.Config.RGB_565 }
+                        bmp = c.inputStream.use { BitmapFactory.decodeStream(it, null, opt) }
+                    } else {
+                        Log.w("HereNav", "tile HTTP ${c.responseCode}")
+                        c.errorStream?.close()
+                    }
                 } catch (e: Exception) {
                     Log.w("HereNav", "tile lỗi: ${e.message}")
                 }
                 synchronized(tiles) {
                     tileWait.remove(key)
-                    if (bmp != null) tiles[key] = bmp!! else tileFailAt = SystemClock.elapsedRealtime()
+                    if (bmp != null) {
+                        tiles[key] = bmp!!; tileFails = 0
+                        if (style == 3) trafficAt[key] = SystemClock.elapsedRealtime()
+                    } else { tileFails++; tileFailAt = SystemClock.elapsedRealtime() }
                 }
             }
-            return null
+            return have
         }
     }
 
@@ -734,7 +757,8 @@ class HereNav(private val gps: LocationFallback) {
         private const val SUGGEST = "https://autosuggest.search.hereapi.com/v1/autosuggest"
         private const val ROUTE = "https://router.hereapi.com/v8/routes"
         private const val TILE = "https://maps.hereapi.com/v3/base/mc"
-        private const val TILE_MAX = 96
+        private const val TILE_MAX = 160
+        private const val TRAFFIC_TILE = "https://traffic.maps.hereapi.com/v3/flow/mc"
         private const val FLEX = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
         const val UPDATE_MS = 300L
         const val OFF_M = 45.0
