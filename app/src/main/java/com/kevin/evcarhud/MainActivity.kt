@@ -1001,6 +1001,7 @@ class Runner(private val ctx: Context) {
                 HudRenderer.resetRisk()
                 bp = BeepPlayer(beepVolume.toInt())
                 beeper = bp
+                ModelFiles.onProgress = { status = it }
                 if (engine == null) {
                     status = "Đang nạp model lên NPU (không có cache sẽ mất ~13 phút)..."
                     val e = DrivingEngine(ctx)

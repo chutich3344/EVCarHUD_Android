@@ -1,6 +1,6 @@
 # Tự build APK mỗi lần đẩy code, rồi đặt vào Release "apk" để tải thẳng trên điện thoại:
 # https://github.com/chutich3344/EVCarHUD_Android/releases/download/apk/EVCarHUD.apk
-# Model .onnx quá lớn cho git: tải lên Release "models" một lần, bước build lấy về assets.
+# APK không kèm model (nhẹ, tải được bằng điện thoại): lần đầu mở app tự tải model từ Release "models" (ModelFiles.kt).
 name: Build APK
 
 on:
@@ -26,27 +26,12 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Lấy model từ Release "models"
-        id: models
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p app/src/main/assets
-          if gh release download models --repo "$GITHUB_REPOSITORY" --dir app/src/main/assets --clobber; then
-            echo "ok=1" >> "$GITHUB_OUTPUT"
-          else
-            # Vẫn build để kiểm tra lỗi biên dịch, nhưng không đăng APK thiếu model
-            echo "::warning::Chưa có Release 'models' (big_driving_supercombo.onnx, yolo_det.onnx, yolo_labels.txt): chỉ kiểm tra biên dịch."
-          fi
-          ls -la app/src/main/assets
-
       - name: Build
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Đưa APK lên Release "apk"
-        if: steps.models.outputs.ok == '1'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

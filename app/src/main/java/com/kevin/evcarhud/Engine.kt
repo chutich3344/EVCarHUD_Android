@@ -129,13 +129,8 @@ class DrivingEngine(private val context: Context) {
     private lateinit var actionT: OnnxTensor
     private val inBuf: ByteBuffer = ByteBuffer.allocateDirect(Preprocess.INPUT_SIZE)
 
-    private fun ensureModelFile(): File {
-        val file = File(context.filesDir, MODEL_NAME)
-        if (!file.exists()) {
-            context.assets.open(MODEL_NAME).use { i -> file.outputStream().use { i.copyTo(it) } }
-        }
-        return file
-    }
+    // Có trong assets thì chép ra, không thì tải từ máy chủ (chỉ lần đầu, khi chưa có cache NPU)
+    private fun ensureModelFile(): File = ModelFiles.ensure(context, MODEL_NAME)
 
     private fun floatTensor(values: FloatArray, shape: LongArray): OnnxTensor {
         val fb = ByteBuffer.allocateDirect(values.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()

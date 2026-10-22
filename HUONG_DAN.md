@@ -232,3 +232,8 @@ File: `UvcSource.kt` (mới), `MainActivity.kt`, `app/build.gradle.kts` (thêm t
 - App ưu tiên khung không nén YUYV 640 px, 15 hình/giây (không phải giải nén trên CPU); webcam không có thì dùng MJPEG nhỏ nhất từ 640 px. Thông báo camera treo ghi rõ đang dùng YUYV hay MJPEG. Webcam không xoay theo màn hình: gắn sao cho hình thẳng.
 - Đặt "FOV ngang camera" đúng góc của webcam (thường 60–80°).
 - Sạc cùng lúc: dùng hub OTG có cổng cấp nguồn (PD). Android Auto lúc đó phải dùng không dây.
+
+## Cài app bằng link APK (22/10)
+- Tải APK trên điện thoại: https://github.com/chutich3344/EVCarHUD_Android/releases/download/apk/EVCarHUD.apk (GitHub tự build mỗi lần có code mới).
+- APK không kèm model. Lần đầu mở app tự tải model (~770 MB) từ Release "models", hiện % trên màn hình; mất mạng thì tự tải tiếp, tắt app mở lại vẫn giữ phần đã tải. Nên dùng Wi-Fi. Sau đó app nạp model lên NPU lần đầu (vài phút), các lần sau mở nhanh.
+- Build ở máy nhà vẫn có thể để model trong `app\src\main\assets\`: có trong assets thì app dùng luôn, không tải.
