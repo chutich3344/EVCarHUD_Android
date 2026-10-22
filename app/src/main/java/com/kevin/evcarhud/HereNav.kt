@@ -633,8 +633,9 @@ class HereNav(private val gps: LocationFallback) {
     }
 
     // Cho trang Bản đồ: tuyến đang đi, vị trí đã khớp vào tuyến, hướng đi (rad, từ bắc theo chiều kim đồng hồ)
-    fun routeLat(): DoubleArray? = if (active) cur?.lat else null
-    fun routeLon(): DoubleArray? = if (active) cur?.lon else null
+    // Tuyến mới nhất (không chờ bám GPS): trang Bản đồ vẽ được cả khi chưa có GPS hoặc camera chưa chạy
+    fun routeLat(): DoubleArray? = if (active) route?.lat else null
+    fun routeLon(): DoubleArray? = if (active) route?.lon else null
     fun egoOnRoute(): Triple<Double, Double, Double>? = if (active && cur != null && idx >= 0) Triple(snapLat, snapLon, heading) else null
 
     fun drawPanel(canvas: Canvas, k: Float, x: Float, y: Float, w: Float, h: Float, speedKmh: Float) {
