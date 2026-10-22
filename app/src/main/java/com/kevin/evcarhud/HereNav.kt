@@ -448,10 +448,14 @@ class HereNav(private val gps: LocationFallback) {
     }
     private val tileDst = RectF()
 
-    private fun tileKey(z: Int, x: Int, y: Int) = (z.toLong() shl 50) or (x.toLong() shl 25) or y.toLong()
+    private fun tileKey(z: Int, x: Int, y: Int, st: Int) = (st.toLong() shl 58) or (z.toLong() shl 50) or (x.toLong() shl 25) or y.toLong()
 
-    private fun tile(z: Int, x: Int, y: Int): Bitmap? {
-        val key = tileKey(z, x, y)
+    // Trang Bản đồ (toàn màn hình): ô kiểu explore.night hoặc ảnh vệ tinh, không nhuộm. Mỗi ô mới tải = 1 lượt gọi HERE
+    fun mapTile(z: Int, x: Int, y: Int, sat: Boolean): Bitmap? = tile(z, x, y, if (sat) 2 else 1)
+
+    // style: 0 = lite.night (bản đồ nhỏ trên HUD), 1 = explore.night, 2 = satellite.day
+    private fun tile(z: Int, x: Int, y: Int, style: Int = 0): Bitmap? {
+        val key = tileKey(z, x, y, style)
         synchronized(tiles) {
             tiles[key]?.let { return it }
             val k = apiKey.trim()
@@ -461,7 +465,8 @@ class HereNav(private val gps: LocationFallback) {
             tileExec.execute {
                 var bmp: Bitmap? = null
                 try {
-                    val c = URL(String.format(Locale.US, "%s/%d/%d/%d/png8?style=lite.night&apiKey=%s", TILE, z, x, y, enc(k)))
+                    val fmt = when (style) { 1 -> "png8?style=explore.night"; 2 -> "jpeg?style=satellite.day"; else -> "png8?style=lite.night" }
+                    val c = URL(String.format(Locale.US, "%s/%d/%d/%d/%s&apiKey=%s", TILE, z, x, y, fmt, enc(k)))
                         .openConnection() as HttpURLConnection
                     try {
                         c.connectTimeout = 6000
@@ -504,6 +509,11 @@ class HereNav(private val gps: LocationFallback) {
             canvas.drawBitmap(b, null, tileDst, tileP)
         }
     }
+
+    // Cho trang Bản đồ: tuyến đang đi, vị trí đã khớp vào tuyến, hướng đi (rad, từ bắc theo chiều kim đồng hồ)
+    fun routeLat(): DoubleArray? = if (active) cur?.lat else null
+    fun routeLon(): DoubleArray? = if (active) cur?.lon else null
+    fun egoOnRoute(): Triple<Double, Double, Double>? = if (active && cur != null && idx >= 0) Triple(snapLat, snapLon, heading) else null
 
     fun drawPanel(canvas: Canvas, k: Float, x: Float, y: Float, w: Float, h: Float, speedKmh: Float) {
         if (!active || !showMini) return
@@ -724,7 +734,7 @@ class HereNav(private val gps: LocationFallback) {
         private const val SUGGEST = "https://autosuggest.search.hereapi.com/v1/autosuggest"
         private const val ROUTE = "https://router.hereapi.com/v8/routes"
         private const val TILE = "https://maps.hereapi.com/v3/base/mc"
-        private const val TILE_MAX = 48
+        private const val TILE_MAX = 96
         private const val FLEX = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
         const val UPDATE_MS = 300L
         const val OFF_M = 45.0

@@ -1696,6 +1696,8 @@ class MainActivity : ComponentActivity() {
                 var showSettings by remember { mutableStateOf(false) }
                 var showReview by remember { mutableStateOf(false) }
                 var showNav by remember { mutableStateOf(false) }
+                // Trang 2: bản đồ trạm sạc toàn màn hình (camera và cảnh báo vẫn chạy nền)
+                var showMap by rememberSaveable { mutableStateOf(false) }
                 var showCalib by remember { mutableStateOf(false) }
                 var calibText by remember { mutableStateOf("") }
                 var calibMsg by remember { mutableStateOf<String?>(null) }
@@ -1733,8 +1735,11 @@ class MainActivity : ComponentActivity() {
                             // Camera điện thoại và webcam USB đều vẽ hình qua GPU; key: đổi nguồn thì tạo lại (cách xoay khác nhau)
                             if (runner.gpuPreview && (runner.camKind == CamKind.PHONE || runner.camKind == CamKind.USB))
                                 key(runner.camKind) { CameraTexture(runner, Modifier.fillMaxSize(), rotate = runner.camKind == CamKind.PHONE) }
-                            FrameView(runner, Modifier.fillMaxSize(), ContentScale.FillBounds)
-                            HudOverlay(runner, Modifier.fillMaxSize())
+                            // Đang ở trang Bản đồ: không vẽ HUD bên dưới cho đỡ tốn GPU (TextureView camera giữ nguyên, không phải mở lại camera)
+                            if (!showMap) {
+                                FrameView(runner, Modifier.fillMaxSize(), ContentScale.FillBounds)
+                                HudOverlay(runner, Modifier.fillMaxSize())
+                            }
                         }
                         if (runner.frame == null && !runner.previewing) {
                             Column(
@@ -1762,6 +1767,8 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+
+                    if (showMap) MapPage(runner) { showMap = false }
 
                     if (showNav) {
                         NavPanel(runner, land) { showNav = false }
@@ -1809,8 +1816,24 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Text(if (showSettings || showNav) "✕" else "⚙", color = Color.White, fontSize = 22.sp)
                     }
+                    // Nút sang trang Bản đồ trạm sạc
+                    if (!showSettings && !showNav && !showMap) {
+                        Box(
+                            Modifier
+                                .align(Alignment.TopEnd)
+                                .statusBarsPadding()
+                                .padding(top = 10.dp, end = 114.dp)
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(Color(0x66000000))
+                                .clickable { showMap = true },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("🗺", color = Color.White, fontSize = 20.sp)
+                        }
+                    }
                     // Nút chỉ đường nhanh (cạnh nút cài đặt)
-                    if (!showSettings && !showNav) {
+                    if (!showSettings && !showNav && !showMap) {
                         Box(
                             Modifier
                                 .align(Alignment.TopEnd)
