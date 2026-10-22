@@ -44,6 +44,11 @@ class LocationFallback(ctx: Context) : LocationListener {
     private var geoAt = -100_000L
     private var started = false
 
+    // Vị trí gần đúng (mạng / Wi‑Fi, hoặc vị trí cuối cùng máy còn nhớ): chỉ để đặt tâm bản đồ / thời tiết khi GPS
+    // chưa bắt được (trong nhà, vừa mở app). Không dùng cho tốc độ, tên đường hay cảnh báo.
+    @Volatile private var approx: Location? = null
+    private val netListener = LocationListener { l -> approx = l }
+
     fun hasPermission() =
         ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
@@ -54,6 +59,11 @@ class LocationFallback(ctx: Context) : LocationListener {
         try {
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, this, Looper.getMainLooper())
             started = true
+            approx = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+                .mapNotNull { p -> try { lm.getLastKnownLocation(p) } catch (_: Throwable) { null } }
+                .maxByOrNull { it.elapsedRealtimeNanos }
+            if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
+                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 10_000L, 0f, netListener, Looper.getMainLooper())
         } catch (e: Throwable) {
             Log.w(LTAG, "không bật được GPS", e)
         }
@@ -61,7 +71,7 @@ class LocationFallback(ctx: Context) : LocationListener {
 
     fun stop() {
         if (!started) return
-        try { lm.removeUpdates(this) } catch (_: Throwable) {}
+        try { lm.removeUpdates(this); lm.removeUpdates(netListener) } catch (_: Throwable) {}
         started = false
     }
 
@@ -102,12 +112,21 @@ class LocationFallback(ctx: Context) : LocationListener {
         return if (osmLimit > 0) osmLimit else if (guess) guessLimit else 0
     }
 
-    // Vị trí gần nhất (trong 10 phút) cho các tra cứu khác (thời tiết)
+    // Vị trí GPS gần nhất (trong 10 phút): bám tuyến, tên đường, giới hạn tốc độ
     fun lastLatLon(): Pair<Double, Double>? {
         if (mocking) return Pair(mockLat, mockLon)
         val l = loc ?: return null
         if (SystemClock.elapsedRealtime() - locAt > 600_000L) return null
         return Pair(l.latitude, l.longitude)
+    }
+
+    // Cho bản đồ / thời tiết / gợi ý tìm kiếm: GPS nếu có, không thì vị trí gần đúng theo mạng
+    // hoặc vị trí máy nhớ lần cuối (trong 1 ngày)
+    fun anyLatLon(): Pair<Double, Double>? {
+        lastLatLon()?.let { return it }
+        val a = approx ?: return null
+        if (SystemClock.elapsedRealtimeNanos() - a.elapsedRealtimeNanos > 86_400_000_000_000L) return null
+        return Pair(a.latitude, a.longitude)
     }
 
     fun limitText(): String = when {

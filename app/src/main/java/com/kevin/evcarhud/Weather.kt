@@ -24,7 +24,7 @@ class WeatherInfo(private val gps: LocationFallback) {
 
     // Gọi thường xuyên từ luồng hiển thị: trả dòng thời tiết gần nhất, tự hẹn lần tra kế tiếp
     fun text(): String {
-        val p = gps.lastLatLon()
+        val p = gps.anyLatLon()
         if (p != null && !busy) {
             val now = SystemClock.elapsedRealtime()
             val far = Math.abs(p.first - lat0) + Math.abs(p.second - lon0) > 0.05

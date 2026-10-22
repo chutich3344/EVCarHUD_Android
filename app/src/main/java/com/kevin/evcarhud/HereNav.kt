@@ -96,7 +96,7 @@ class HereNav(private val gps: LocationFallback) {
         if (key.isEmpty()) { note = "Chưa có API key HERE"; return emptyList() }
         if (text.isBlank()) return emptyList()
         // Autosuggest bắt buộc có vị trí tham chiếu: chưa có GPS thì lấy giữa Việt Nam
-        val p = gps.lastLatLon() ?: (16.0 to 106.0)
+        val p = gps.anyLatLon() ?: (16.0 to 106.0)
         try {
             val u = String.format(Locale.US, "%s?at=%.6f,%.6f&q=%s&lang=vi-VN&in=countryCode:VNM&limit=8&apiKey=%s",
                 SUGGEST, p.first, p.second, enc(text.trim()), enc(key))

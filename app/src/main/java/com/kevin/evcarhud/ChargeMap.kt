@@ -245,7 +245,7 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
     tick   // đọc ở đây để trang dựng lại 10 lần/giây: trạng thái chỉ đường nằm ở luồng nền
     val ego = nav.egoOnRoute()
     val navOn = nav.active
-    val gpsLl = runner.gps.lastLatLon()
+    val gpsLl = runner.gps.anyLatLon()
     val egoLl: Triple<Double, Double, Double?>? = ego?.let { Triple(it.first, it.second, it.third) }
         ?: gpsLl?.let { Triple(it.first, it.second, null) }
     if ((follow || cLat.isNaN()) && egoLl != null) { cLat = egoLl.first; cLon = egoLl.second }
