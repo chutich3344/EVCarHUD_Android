@@ -168,40 +168,42 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
         c.translate(ox, oy)
         c.rotate(-rotDeg)
         // Chỉ lấy các ô thật sự nằm trên màn hình (không quay: đúng khung; có quay: vòng tròn phủ khung)
-        val n = 1 shl zt
+        // Ô 512 px ở mức zt-1 phủ đúng diện tích 2×2 ô 256 px ở mức zt: một lượt gọi HERE bằng 4 ô cũ
+        val tl = zt - 1
+        val n = 1 shl tl
         val ex0: Double; val ex1: Double; val ey0: Double; val ey1: Double
         if (rotDeg == 0f) { ex0 = ox / sc; ex1 = (w - ox) / sc; ey0 = oy / sc; ey1 = (h - oy) / sc }
         else { val r = hypot(max(ox, w - ox).toDouble(), max(oy, h - oy).toDouble()) / sc; ex0 = r; ex1 = r; ey0 = r; ey1 = r }
-        val tx0 = floor((cgx - ex0) / 256.0).toInt(); val tx1 = floor((cgx + ex1) / 256.0).toInt()
-        val ty0 = floor((cgy - ey0) / 256.0).toInt(); val ty1 = floor((cgy + ey1) / 256.0).toInt()
+        val tx0 = floor((cgx - ex0) / 512.0).toInt(); val tx1 = floor((cgx + ex1) / 512.0).toInt()
+        val ty0 = floor((cgy - ey0) / 512.0).toInt(); val ty1 = floor((cgy + ey1) / 512.0).toInt()
         // Ô gần tâm xin tải trước
         val order = ArrayList<Long>()
         for (ty in max(0, ty0)..min(n - 1, ty1)) for (tx in tx0..tx1) order.add((tx.toLong() shl 32) or ty.toLong())
-        val ctx0 = cgx / 256.0 - 0.5; val cty0 = cgy / 256.0 - 0.5
+        val ctx0 = cgx / 512.0 - 0.5; val cty0 = cgy / 512.0 - 0.5
         order.sortBy { val tx = (it shr 32).toInt(); val ty = it.toInt(); hypot(tx - ctx0, ty - cty0) }
-        val sz = (256.0 * sc).toFloat()
+        val sz = (512.0 * sc).toFloat()
         for (o in order) {
             val tx = (o shr 32).toInt(); val ty = o.toInt(); val wx = ((tx % n) + n) % n
-            val l = ((tx * 256.0 - cgx) * sc).toFloat(); val t = ((ty * 256.0 - cgy) * sc).toFloat()
+            val l = ((tx * 512.0 - cgx) * sc).toFloat(); val t = ((ty * 512.0 - cgy) * sc).toFloat()
             dst.set(l, t, l + sz + 0.5f, t + sz + 0.5f)
-            val b = nav.mapTile(zt, wx, ty, sat)
+            val b = nav.mapTile(tl, wx, ty, sat)
             if (b != null) c.drawBitmap(b, null, dst, tileP)
             else {
                 // Ô chưa tải: phóng tạm phần tương ứng của ô mức thấp hơn (như Google Maps, mờ một chút rồi nét lại)
                 var got = false
                 for (d in 1..4) {
-                    if (zt - d < 3) break
-                    val p = nav.cachedMapTile(zt - d, wx shr d, ty shr d, sat) ?: continue
-                    val part = 256 shr d
+                    if (tl - d < 2) break
+                    val p = nav.cachedMapTile(tl - d, wx shr d, ty shr d, sat) ?: continue
+                    val part = 512 shr d
                     val px = (wx and ((1 shl d) - 1)) * part; val py = (ty and ((1 shl d) - 1)) * part
-                    src.set(px * p.width / 256, py * p.height / 256, (px + part) * p.width / 256, (py + part) * p.height / 256)
+                    src.set(px * p.width / 512, py * p.height / 512, (px + part) * p.width / 512, (py + part) * p.height / 512)
                     c.drawBitmap(p, src, dst, tileP)
                     got = true
                     break
                 }
                 // vừa thu nhỏ: ghép 4 ô mức cao hơn đã có
-                if (!got && zt < 19) for (q in 0..3) {
-                    val cb = nav.cachedMapTile(zt + 1, wx * 2 + (q and 1), ty * 2 + (q shr 1), sat) ?: continue
+                if (!got && tl < 18) for (q in 0..3) {
+                    val cb = nav.cachedMapTile(tl + 1, wx * 2 + (q and 1), ty * 2 + (q shr 1), sat) ?: continue
                     val hz = sz / 2f; val ql = l + (q and 1) * hz; val qt = t + (q shr 1) * hz
                     dst.set(ql, qt, ql + hz + 0.5f, qt + hz + 0.5f)
                     c.drawBitmap(cb, null, dst, tileP)
@@ -210,8 +212,8 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
         }
         if (traffic) for (o in order) {
             val tx = (o shr 32).toInt(); val ty = o.toInt()
-            val b = nav.trafficTile(zt, ((tx % n) + n) % n, ty) ?: continue
-            val l = ((tx * 256.0 - cgx) * sc).toFloat(); val t = ((ty * 256.0 - cgy) * sc).toFloat()
+            val b = nav.trafficTile(tl, ((tx % n) + n) % n, ty) ?: continue
+            val l = ((tx * 512.0 - cgx) * sc).toFloat(); val t = ((ty * 512.0 - cgy) * sc).toFloat()
             dst.set(l, t, l + sz + 0.5f, t + sz + 0.5f)
             c.drawBitmap(b, null, dst, tileP)
         }
@@ -447,6 +449,10 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
         if (nav.apiKey.isBlank()) {
             Text("Chưa có key HERE: nhập trong Cài đặt để hiện bản đồ", color = Color(0xFFFFC107), fontSize = 13.sp,
                 modifier = Modifier.align(Alignment.Center).background(Color(0xCC000000), RoundedCornerShape(10.dp)).padding(10.dp))
+        }
+        if (nav.tileNote.isNotEmpty() && !navOn) {
+            Text(nav.tileNote, color = Color(0xFFFFC107), fontSize = 12.sp,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp).background(Color(0xCC000000), RoundedCornerShape(10.dp)).padding(8.dp))
         }
 
         // Góc trên trái (khi không dẫn đường): ô tìm kiếm, gợi ý địa chỉ, các phương án tuyến, bộ lọc công suất

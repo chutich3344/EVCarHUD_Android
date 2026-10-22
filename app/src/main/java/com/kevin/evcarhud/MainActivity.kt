@@ -305,7 +305,7 @@ class Runner(private val ctx: Context) {
     val weather = WeatherInfo(gps)            // thời tiết hiện tại (Open-Meteo) cho góc trái HUD
     val here = HereGeo(gps)
     // Chỉ đường HERE (tìm điểm đến, mũi tên rẽ, bản đồ nhỏ); 0 = ô tô, 1 = xe máy
-    val nav = HereNav(gps)
+    val nav = HereNav(gps).apply { diskDir = File(ctx.cacheDir, "tiles") }
     var navVehicle by mutableStateOf(prefs.getInt("navVehicle", 0).coerceIn(0, 1))
     var miniMap by mutableStateOf(prefs.getBoolean("miniMap", true))
 

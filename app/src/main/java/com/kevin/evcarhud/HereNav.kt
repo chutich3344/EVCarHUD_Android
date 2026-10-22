@@ -13,6 +13,7 @@ import android.os.SystemClock
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -517,6 +518,20 @@ class HereNav(private val gps: LocationFallback) {
         synchronized(tiles) { tiles[tileKey(z, x, y, if (sat) 2 else 1)] }
 
     // style: 0 = lite.night (bản đồ nhỏ trên HUD), 1 = explore.night, 2 = satellite.day, 3 = giao thông
+    // Tiết kiệm lượt gọi HERE:
+    // - ô trang Bản đồ / giao thông xin cỡ 512 px (1 lượt = diện tích bằng 4 ô 256 px)
+    // - ô bản đồ / vệ tinh lưu xuống bộ nhớ máy (diskDir) 30 ngày: mở lại app, đi lại đường cũ không tốn lượt
+    // - ô lỗi không xin lại trong 60 s; HERE từ chối cả lớp (HTTP 4xx) thì ngừng lớp đó 10 phút
+    @Volatile var diskDir: File? = null
+    @Volatile var tileNote = ""
+        private set
+    private val failAt = HashMap<Long, Long>()
+    private val styleBadAt = LongArray(4) { -1_000_000L }
+    private var diskWrites = 0
+
+    private fun tileFile(z: Int, x: Int, y: Int, style: Int): File? =
+        diskDir?.let { File(it, "s${style}_${z}_${x}_$y") }
+
     private fun tile(z: Int, x: Int, y: Int, style: Int = 0): Bitmap? {
         val key = tileKey(z, x, y, style)
         synchronized(tiles) {
@@ -526,40 +541,80 @@ class HereNav(private val gps: LocationFallback) {
             val k = apiKey.trim()
             if (k.isEmpty() || key in tileWait || tileWait.size >= 24) return have
             if (tileFails >= 3 && now - tileFailAt < 5_000L) return have
+            if (now - (failAt[key] ?: -1_000_000L) < 60_000L) return have
+            if (now - styleBadAt[style] < 600_000L) return have
             tileWait.add(key)
             tileExec.execute {
                 var bmp: Bitmap? = null
+                var bad = 0
+                val opt = BitmapFactory.Options().apply { if (style == 1 || style == 2) inPreferredConfig = Bitmap.Config.RGB_565 }
+                val f = if (style == 3) null else tileFile(z, x, y, style)
                 try {
-                    val url = if (style == 3) String.format(Locale.US, "%s/%d/%d/%d/png?apiKey=%s", TRAFFIC_TILE, z, x, y, enc(k))
-                    else {
-                        val fmt = when (style) { 1 -> "png8?style=explore.night"; 2 -> "jpeg?style=satellite.day"; else -> "png8?style=lite.night" }
-                        String.format(Locale.US, "%s/%d/%d/%d/%s&apiKey=%s", TILE, z, x, y, fmt, enc(k))
-                    }
-                    val c = URL(url).openConnection() as HttpURLConnection
-                    // không gọi disconnect(): giữ kết nối để ô sau dùng lại, khỏi bắt tay TLS mỗi ô
-                    c.connectTimeout = 6000
-                    c.readTimeout = 8000
-                    calls++
-                    if (c.responseCode == 200) {
-                        // ô trang bản đồ không cần độ trong suốt: RGB_565 tốn một nửa bộ nhớ
-                        val opt = BitmapFactory.Options().apply { if (style == 1 || style == 2) inPreferredConfig = Bitmap.Config.RGB_565 }
-                        bmp = c.inputStream.use { BitmapFactory.decodeStream(it, null, opt) }
-                    } else {
-                        Log.w("HereNav", "tile HTTP ${c.responseCode}")
-                        c.errorStream?.close()
+                    // 1) bộ nhớ máy (không tốn lượt gọi)
+                    if (f != null && f.exists() && System.currentTimeMillis() - f.lastModified() < DISK_DAYS * 86_400_000L)
+                        bmp = BitmapFactory.decodeFile(f.absolutePath, opt)
+                    // 2) tải từ HERE
+                    if (bmp == null) {
+                        val sz = if (style == 0) "" else "&size=512"
+                        val url = if (style == 3) String.format(Locale.US, "%s/%d/%d/%d/png?apiKey=%s%s", TRAFFIC_TILE, z, x, y, enc(k), sz)
+                        else {
+                            val fmt = when (style) { 1 -> "png8?style=explore.night"; 2 -> "jpeg?style=satellite.day"; else -> "png8?style=lite.night" }
+                            String.format(Locale.US, "%s/%d/%d/%d/%s%s&apiKey=%s", TILE, z, x, y, fmt, sz, enc(k))
+                        }
+                        val c = URL(url).openConnection() as HttpURLConnection
+                        // không gọi disconnect(): giữ kết nối để ô sau dùng lại, khỏi bắt tay TLS mỗi ô
+                        c.connectTimeout = 6000
+                        c.readTimeout = 8000
+                        calls++
+                        val code = c.responseCode
+                        if (code == 200) {
+                            val bytes = c.inputStream.use { it.readBytes() }
+                            // ô trang bản đồ không cần độ trong suốt: RGB_565 tốn một nửa bộ nhớ
+                            bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opt)
+                            if (bmp != null && f != null) saveTile(f, bytes)
+                        } else {
+                            Log.w("HereNav", "tile HTTP $code (lớp $style)")
+                            c.errorStream?.close()
+                            if (code in 400..499 && code != 429) bad = code
+                        }
                     }
                 } catch (e: Exception) {
                     Log.w("HereNav", "tile lỗi: ${e.message}")
                 }
                 synchronized(tiles) {
                     tileWait.remove(key)
+                    val t = SystemClock.elapsedRealtime()
                     if (bmp != null) {
                         tiles[key] = bmp!!; tileFails = 0
-                        if (style == 3) trafficAt[key] = SystemClock.elapsedRealtime()
-                    } else { tileFails++; tileFailAt = SystemClock.elapsedRealtime() }
+                        if (style == 3) trafficAt[key] = t
+                    } else {
+                        tileFails++; tileFailAt = t
+                        failAt[key] = t
+                        if (failAt.size > 500) failAt.clear()
+                        if (bad != 0) {
+                            styleBadAt[style] = t
+                            val nm = when (style) { 1 -> "Bản đồ"; 2 -> "Vệ tinh"; 3 -> "Giao thông"; else -> "Bản đồ nhỏ" }
+                            tileNote = "HERE từ chối lớp $nm (HTTP $bad), tạm ngừng tải lớp này 10 phút"
+                        }
+                    }
                 }
             }
             return have
+        }
+    }
+
+    private fun saveTile(f: File, bytes: ByteArray) {
+        try {
+            f.parentFile?.mkdirs()
+            f.writeBytes(bytes)
+            // khoảng 300 lần ghi thì dọn: giữ tối đa DISK_MAX byte, xoá ô cũ nhất trước
+            if (++diskWrites % 300 == 1) {
+                val all = f.parentFile?.listFiles()?.sortedByDescending { it.lastModified() } ?: return
+                var sum = 0L
+                for (x in all) { sum += x.length(); if (sum > DISK_MAX) x.delete() }
+            }
+        } catch (e: Exception) {
+            Log.w("HereNav", "lưu ô: ${e.message}")
         }
     }
 
@@ -811,6 +866,8 @@ class HereNav(private val gps: LocationFallback) {
         private const val ROUTE = "https://router.hereapi.com/v8/routes"
         private const val TILE = "https://maps.hereapi.com/v3/base/mc"
         private const val TILE_MAX = 160
+        private const val DISK_DAYS = 30L
+        private const val DISK_MAX = 200L * 1024 * 1024
         private const val TRAFFIC_TILE = "https://traffic.maps.hereapi.com/v3/flow/mc"
         private const val FLEX = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
         const val UPDATE_MS = 300L
