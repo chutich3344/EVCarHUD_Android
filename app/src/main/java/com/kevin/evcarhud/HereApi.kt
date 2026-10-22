@@ -8,7 +8,7 @@ import java.net.URL
 // Worker đổi https://<PROXY>/<dịch vụ>/... thành https://<dịch vụ>.hereapi.com/... rồi gắn apiKey,
 // và giới hạn số lượt gọi theo từng máy (mã cài đặt gửi trong X-Device).
 object HereApi {
-    const val PROXY = "https://evcarhud-api.evcarhud.workers.dev"
+    const val PROXY = "https://evcarhud-api.evcar-vf7.workers.dev"
     // Mã nhận app (không phải bí mật thật, chỉ chặn người lạ gọi thẳng vào Worker); trùng APP_TOKEN trong worker/wrangler.toml
     private const val APP_TOKEN = "NMuIzilyzSUd-3jRFiDmIjhp"
     @Volatile var device = ""                // mã cài đặt, MainActivity đặt lúc mở app
