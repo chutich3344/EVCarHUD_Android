@@ -7,6 +7,19 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -53,6 +66,7 @@ import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.hypot
+import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
@@ -104,6 +118,29 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
     }
     private val labelRim = Paint(label).apply { style = Paint.Style.STROKE; color = 0xCC000000.toInt() }
     private val path = Path()
+    private val altP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFF2B5D8A.toInt(); strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val altRim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFF0B3A5C.toInt(); strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val destP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF14B8A6.toInt() }
+    private var altPts: Array<FloatArray> = emptyArray()
+
+    // Bấm gần tuyến nào (toạ độ màn hình) thì chọn tuyến đó; -1 = không trúng tuyến nào
+    fun pickAlt(x: Float, y: Float): Int {
+        var best = -1; var bd = 26f * k
+        for (i in altPts.indices) {
+            val a = altPts[i]; var j = 0
+            while (j + 3 < a.size) {
+                val d = segDist(x, y, a[j], a[j + 1], a[j + 2], a[j + 3])
+                if (d < bd) { bd = d; best = i }
+                j += 2
+            }
+        }
+        return best
+    }
+    private fun segDist(px: Float, py: Float, ax: Float, ay: Float, bx: Float, by: Float): Float {
+        val dx = bx - ax; val dy = by - ay; val l2 = dx * dx + dy * dy
+        val t = if (l2 > 0f) (((px - ax) * dx + (py - ay) * dy) / l2).coerceIn(0f, 1f) else 0f
+        return hypot(px - ax - t * dx, py - ay - t * dy)
+    }
     private val dst = RectF()
     private val src = android.graphics.Rect()
 
@@ -115,7 +152,8 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
 
     // Kết quả: các trạm đã vẽ (toạ độ màn hình) để bấm chọn
     fun draw(c: Canvas, w: Float, h: Float, cLat: Double, cLon: Double, z: Double, rotDeg: Float, ox: Float, oy: Float,
-             sat: Boolean, traffic: Boolean, stations: List<Chargers.St>, sel: Chargers.St?, ego: Triple<Double, Double, Double?>?): List<Hit> {
+             sat: Boolean, traffic: Boolean, stations: List<Chargers.St>, sel: Chargers.St?, ego: Triple<Double, Double, Double?>?,
+             alts: List<HereNav.RouteOpt>, altSel: Int, dest: Pair<Double, Double>?): List<Hit> {
         c.drawRect(0f, 0f, w, h, bg)
         val zt = floor(z).toInt().coerceIn(3, 19)
         val world = 256.0 * (1 shl zt)
@@ -178,6 +216,36 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
             c.drawBitmap(b, null, dst, tileP)
         }
         c.restore()
+
+        // Các phương án tuyến đang xem trước: tuyến chưa chọn xanh sẫm, tuyến chọn sáng lên và vẽ đè lên trên
+        altPts = Array(alts.size) { i ->
+            val r = alts[i]; val step = max(1, r.lat.size / 400)
+            val m = (r.lat.size + step - 1) / step + 1
+            val a = FloatArray(m * 2); var j = 0
+            var q = 0
+            while (q < r.lat.size) { a[j++] = sx(r.lat[q], r.lon[q]); a[j++] = sy(r.lat[q], r.lon[q]); q += step }
+            val e = r.lat.size - 1
+            a[j++] = sx(r.lat[e], r.lon[e]); a[j++] = sy(r.lat[e], r.lon[e])
+            a.copyOf(j)
+        }
+        for (pass in 0..1) for (i in altPts.indices) {
+            if ((i == altSel) != (pass == 1)) continue
+            val a = altPts[i]
+            path.reset(); path.moveTo(a[0], a[1])
+            var j = 2
+            while (j < a.size) { path.lineTo(a[j], a[j + 1]); j += 2 }
+            if (i == altSel) {
+                altRim.strokeWidth = 11f * k; c.drawPath(path, altRim)
+                routeP.strokeWidth = 7f * k; c.drawPath(path, routeP)
+            } else {
+                altP.strokeWidth = 7f * k; c.drawPath(path, altP)
+            }
+        }
+        if (dest != null) {
+            val x = sx(dest.first, dest.second); val y = sy(dest.first, dest.second)
+            path.reset(); path.moveTo(x, y); path.lineTo(x - 9f * k, y - 18f * k); path.lineTo(x + 9f * k, y - 18f * k); path.close()
+            c.drawPath(path, destP); c.drawCircle(x, y - 24f * k, 14f * k, destP); c.drawCircle(x, y - 24f * k, 5f * k, white)
+        }
 
         // Tuyến đang chỉ đường
         val la = nav.routeLat(); val lo = nav.routeLon()
@@ -250,6 +318,16 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
 
 private val KW_STEPS = intArrayOf(0, 60, 120, 250)
 
+private fun fmtMin(sec: Double): String {
+    val m = (sec / 60).toInt().coerceAtLeast(1)
+    return if (m >= 60) "${m / 60} giờ ${m % 60} phút" else "$m phút"
+}
+
+private fun etaText(sec: Double): String {
+    val c = java.util.Calendar.getInstance().apply { add(java.util.Calendar.SECOND, sec.toInt()) }
+    return String.format(Locale.US, "%02d:%02d", c.get(java.util.Calendar.HOUR_OF_DAY), c.get(java.util.Calendar.MINUTE))
+}
+
 private fun turnGlyph(code: Int) = when (code) {
     2, 4, 6, 13 -> "↰"
     3, 5, 7, 14 -> "↱"
@@ -279,6 +357,17 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
     var cLat by rememberSaveable { mutableStateOf(Double.NaN) }
     var cLon by rememberSaveable { mutableStateOf(Double.NaN) }
     var sel by remember { mutableStateOf<Chargers.St?>(null) }
+    var userRot by rememberSaveable { mutableStateOf(0f) }          // xoay tay bằng 2 ngón (độ)
+    var query by remember { mutableStateOf("") }
+    var searching by remember { mutableStateOf(false) }             // đang gõ: hiện gợi ý thay cho bộ lọc
+    var sugg by remember { mutableStateOf<List<HereNav.Place>>(emptyList()) }
+    var dest by remember { mutableStateOf<Triple<Double, Double, String>?>(null) }   // điểm đến đang xem tuyến
+    var alts by remember { mutableStateOf<List<HereNav.RouteOpt>>(emptyList()) }
+    var altSel by remember { mutableStateOf(0) }
+    var altMsg by remember { mutableStateOf("") }
+    val rotRef = remember { floatArrayOf(0f) }    // góc quay mới nhất cho cử chỉ (cử chỉ chỉ tạo lại khi navOn đổi)
+    val focus = LocalFocusManager.current
+    val hPx = LocalConfiguration.current.screenHeightDp * LocalDensity.current.density
     // vị trí các trạm vừa vẽ (ghi trong lúc vẽ nên không dùng State, tránh vẽ lại vòng lặp)
     val hitsRef = remember { arrayOf<List<MapDraw.Hit>>(emptyList()) }
 
@@ -290,7 +379,32 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
         ?: gpsLl?.let { Triple(it.first, it.second, null) }
     if ((follow || cLat.isNaN()) && egoLl != null) { cLat = egoLl.first; cLon = egoLl.second }
     if (cLat.isNaN()) { cLat = 10.7769; cLon = 106.7009 }   // chưa có GPS: trung tâm TP.HCM
-    val rotDeg = if (navOn && follow && ego != null) Math.toDegrees(ego.third).toFloat() else 0f
+    val rotDeg = if (navOn && follow && ego != null) Math.toDegrees(ego.third).toFloat() else userRot
+    rotRef[0] = rotDeg
+
+    // Gợi ý địa chỉ khi gõ (dừng gõ 0,45 s mới hỏi HERE: mỗi lần hỏi là 1 lượt gọi)
+    LaunchedEffect(query, searching) {
+        if (!searching || query.trim().length < 2) { sugg = emptyList(); return@LaunchedEffect }
+        delay(450)
+        val q = query
+        sugg = withContext(Dispatchers.IO) { nav.search(q) }
+    }
+    // Có điểm đến: xin 2–3 tuyến, thu bản đồ cho thấy cả đường đi
+    LaunchedEffect(dest, runner.navVehicle) {
+        alts = emptyList(); altSel = 0
+        val d = dest ?: return@LaunchedEffect
+        val from = runner.gps.anyLatLon()
+        if (from == null) { altMsg = "Chưa có vị trí của bạn (bật Vị trí trên điện thoại)"; return@LaunchedEffect }
+        altMsg = "Đang tìm đường…"
+        follow = false
+        cLat = (from.first + d.first) / 2; cLon = (from.second + d.second) / 2
+        val spanM = max(abs(from.first - d.first) * 111_320.0, abs(from.second - d.second) * 111_320.0 * cos(Math.toRadians(cLat))) + 300.0
+        zoom = (ln(156_543.0 * cos(Math.toRadians(cLat)) * hPx * 0.55 / (k * spanM)) / ln(2.0)).coerceIn(5.0, 17.0)
+        val r = withContext(Dispatchers.IO) { nav.previewRoutes(from.first, from.second, d.first, d.second) }
+        alts = r
+        altMsg = if (r.isEmpty()) nav.note.ifEmpty { "Không tìm được đường" } else ""
+    }
+    fun clearDest() { dest = null; alts = emptyList(); altMsg = ""; query = ""; sugg = emptyList(); searching = false; focus.clearFocus() }
     val minKw = KW_STEPS[kwIdx]
     val shown = remember(stations, minKw) { stations.filter { it.maxKw >= minKw } }
 
@@ -302,15 +416,20 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
                     if (tilt) { rotationX = 38f; cameraDistance = 12f * density; scaleX = 1.25f; scaleY = 1.25f }
                 }
                 .pointerInput(navOn) {
-                    detectTransformGestures { _, pan, zf, _ ->
-                        follow = false
+                    detectTransformGestures { _, pan, zf, rot ->
+                        // đang bám xe thì giữ nguyên góc đang thấy rồi mới cho xoay tay
+                        if (follow) { userRot = rotRef[0]; follow = false }
                         if (zf != 1f) zoom = (zoom + ln(zf.toDouble()) / ln(2.0)).coerceIn(5.0, 18.5)
-                        val p = draw.panTo(cLat, cLon, zoom, rotDeg, pan.x, pan.y)
+                        if (rot != 0f) userRot = ((userRot - rot) % 360f + 360f) % 360f
+                        val p = draw.panTo(cLat, cLon, zoom, userRot, pan.x, pan.y)
                         cLat = p.first; cLon = p.second
                     }
                 }
                 .pointerInput(Unit) {
                     detectTapGestures { o ->
+                        if (searching) { searching = false; focus.clearFocus(); return@detectTapGestures }
+                        val ai = draw.pickAlt(o.x, o.y)
+                        if (ai >= 0) { altSel = ai; return@detectTapGestures }
                         val near = hitsRef[0].minByOrNull { hypot(it.x - o.x, it.y - o.y) }
                         sel = if (near != null && hypot(near.x - o.x, near.y - o.y) < 30f * k) near.st else null
                     }
@@ -320,7 +439,8 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
             val oy = if (navOn && follow) size.height * 0.72f else size.height * 0.5f
             drawIntoCanvas { cv ->
                 hitsRef[0] = draw.draw(cv.nativeCanvas, size.width, size.height, cLat, cLon, zoom, rotDeg, size.width / 2f, oy,
-                    sat, traffic, shown, sel, egoLl)
+                    sat, traffic, shown, sel, egoLl, if (navOn) emptyList() else alts, altSel,
+                    if (navOn) null else dest?.let { Pair(it.first, it.second) })
             }
         }
 
@@ -329,15 +449,112 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
                 modifier = Modifier.align(Alignment.Center).background(Color(0xCC000000), RoundedCornerShape(10.dp)).padding(10.dp))
         }
 
-        // Lọc công suất (ẩn khi đang dẫn đường)
+        // Góc trên trái (khi không dẫn đường): ô tìm kiếm, gợi ý địa chỉ, các phương án tuyến, bộ lọc công suất
         if (!navOn) {
-            Row(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("Tất cả", "≥60 kW", "≥120 kW", "≥250 kW").forEachIndexed { i, t ->
-                    Text(t, color = Color.White, fontSize = 14.sp,
-                        modifier = Modifier.clip(RoundedCornerShape(18.dp))
-                            .background(if (i == kwIdx) Color(0xFF0A84FF) else Color(0xE61C1C1E))
-                            .clickable { kwIdx = i; sel = null }
-                            .padding(horizontal = 14.dp, vertical = 8.dp))
+            Column(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(12.dp).width(380.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().height(50.dp).clip(RoundedCornerShape(25.dp)).background(Color(0xF20E202C))
+                        .padding(start = 16.dp, end = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("🔍", color = Color(0xFF8FB8D0), fontSize = 17.sp, modifier = Modifier.padding(end = 10.dp))
+                    Box(Modifier.weight(1f)) {
+                        if (query.isEmpty()) Text("Tìm địa điểm, địa chỉ", color = Color(0xFF8A9BA8), fontSize = 16.sp)
+                        BasicTextField(
+                            value = query,
+                            onValueChange = { query = it; searching = true },
+                            singleLine = true,
+                            textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
+                            cursorBrush = SolidColor(Color(0xFF4FC3F7)),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(onSearch = { searching = true }),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    if (query.isNotEmpty() || dest != null) {
+                        Box(Modifier.size(40.dp).clip(CircleShape).clickable { clearDest() }, contentAlignment = Alignment.Center) {
+                            Text("✕", color = Color.White, fontSize = 18.sp)
+                        }
+                    }
+                }
+                val d = dest
+                if (searching && sugg.isNotEmpty()) {
+                    Column(Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xF50E202C))) {
+                        sugg.take(6).forEach { pl ->
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    val ll = nav.place(pl.refId)
+                                    if (ll != null) {
+                                        dest = Triple(ll.first, ll.second, pl.name); query = pl.name
+                                        searching = false; sugg = emptyList(); sel = null; focus.clearFocus()
+                                    }
+                                }.padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(pl.name, color = Color.White, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    if (pl.address.isNotBlank())
+                                        Text(pl.address, color = Color(0xFF9FB3C2), fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                if (!pl.distKm.isNaN())
+                                    Text(String.format(Locale.US, "%.1f km", pl.distKm).replace('.', ','), color = Color(0xFF9FB3C2),
+                                        fontSize = 12.sp, modifier = Modifier.padding(start = 8.dp))
+                            }
+                        }
+                    }
+                } else if (d != null) {
+                    Column(Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xF50E202C)).padding(vertical = 8.dp)) {
+                        Row(Modifier.padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("Ô tô", "Xe máy").forEachIndexed { i, t ->
+                                Text(t, color = Color.White, fontSize = 14.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(16.dp))
+                                        .background(if (runner.navVehicle == i) Color(0xFF14B8A6) else Color(0xFF243844))
+                                        .clickable { runner.navVehicle = i; runner.savePrefs() }
+                                        .padding(horizontal = 14.dp, vertical = 6.dp))
+                            }
+                        }
+                        if (altMsg.isNotEmpty()) Text(altMsg, color = Color(0xFFB0C4D0), fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+                        alts.forEachIndexed { i, o ->
+                            val on = i == altSel
+                            Row(
+                                Modifier.fillMaxWidth().clickable { altSel = i }
+                                    .background(if (on) Color(0xFF16384A) else Color.Transparent)
+                                    .padding(vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(Modifier.width(4.dp).height(44.dp).background(if (on) Color(0xFF4FC3F7) else Color.Transparent))
+                                Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                    Row(verticalAlignment = Alignment.Bottom) {
+                                        Text(fmtMin(o.totalS), color = if (on) Color.White else Color(0xFFD0DCE4), fontSize = 22.sp, fontWeight = FontWeight.Medium)
+                                        if (o.delayS >= 60) Text("  kẹt xe +${(o.delayS / 60).toInt()} phút", color = Color(0xFFFFC107), fontSize = 13.sp,
+                                            modifier = Modifier.padding(bottom = 3.dp))
+                                    }
+                                    Text(String.format(Locale.US, "%.1f km", o.totalM / 1000).replace('.', ',') + (if (i == 0) " · nhanh nhất" else ""),
+                                        color = Color(0xFF9FB3C2), fontSize = 13.sp)
+                                }
+                                Text(etaText(o.totalS), color = Color(0xFF9FB3C2), fontSize = 14.sp, modifier = Modifier.padding(end = 14.dp))
+                            }
+                        }
+                        Row(Modifier.padding(start = 14.dp, end = 14.dp, top = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (alts.isNotEmpty()) Text("Bắt đầu", color = Color.White, fontSize = 15.sp,
+                                modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF0A84FF))
+                                    .clickable { nav.startOpt(altSel, d.first, d.second, d.third); follow = true; zoom = 16.0; clearDest() }
+                                    .padding(horizontal = 22.dp, vertical = 10.dp))
+                            Text("Hủy", color = Color.White, fontSize = 15.sp,
+                                modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF3A3A3C))
+                                    .clickable { clearDest() }.padding(horizontal = 18.dp, vertical = 10.dp))
+                        }
+                    }
+                } else {
+                    Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("Tất cả", "≥60 kW", "≥120 kW", "≥250 kW").forEachIndexed { i, t ->
+                            Text(t, color = Color.White, fontSize = 14.sp,
+                                modifier = Modifier.clip(RoundedCornerShape(18.dp))
+                                    .background(if (i == kwIdx) Color(0xFF0A84FF) else Color(0xE61C1C1E))
+                                    .clickable { kwIdx = i; sel = null }
+                                    .padding(horizontal = 14.dp, vertical = 8.dp))
+                        }
+                    }
                 }
             }
         }
@@ -361,7 +578,15 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
         }
 
         // Cột nút bên phải: lớp bản đồ, 3D, về vị trí xe, phóng to / thu nhỏ
-        Column(Modifier.align(Alignment.CenterEnd).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.align(Alignment.CenterEnd).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            // La bàn: hiện khi bản đồ đang xoay tay, bấm để quay về hướng bắc
+            if (!(navOn && follow) && abs(rotDeg) > 0.5f && abs(rotDeg - 360f) > 0.5f) {
+                Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xF00E202C)).clickable { userRot = 0f },
+                    contentAlignment = Alignment.Center) {
+                    Text("▲", color = Color(0xFFFF5252), fontSize = 18.sp, modifier = Modifier.graphicsLayer { rotationZ = -rotDeg })
+                }
+            }
             Column(Modifier.clip(RoundedCornerShape(26.dp)).background(Color(0xF00E202C))) {
                 MapBtn(if (sat) "Vệ\ntinh" else "Bản\nđồ", false, 12) { sat = !sat }
                 MapBtn("Giao\nthông", traffic, 11) { traffic = !traffic }
@@ -376,7 +601,7 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
 
         // Thẻ trạm đã chọn
         val s = sel
-        if (s != null && !navOn) {
+        if (s != null && !navOn && dest == null) {
             Column(
                 Modifier.align(Alignment.BottomStart).padding(12.dp).widthIn(max = 440.dp)
                     .clip(RoundedCornerShape(16.dp)).background(Color(0xF51C1C1E)).padding(14.dp)
@@ -388,7 +613,7 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
                 Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Dẫn đường", color = Color.White, fontSize = 15.sp,
                         modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF0A84FF))
-                            .clickable { nav.start(s.lat, s.lon, s.name); follow = true; zoom = 16.0; sel = null }
+                            .clickable { dest = Triple(s.lat, s.lon, s.name); query = s.name; sel = null }
                             .padding(horizontal = 18.dp, vertical = 10.dp))
                     Text("Đóng", color = Color.White, fontSize = 15.sp,
                         modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF3A3A3C))

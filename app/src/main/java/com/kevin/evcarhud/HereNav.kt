@@ -40,6 +40,8 @@ import kotlin.math.sqrt
 class HereNav(private val gps: LocationFallback) {
     class Place(val refId: String, val name: String, val address: String, val distKm: Double)
     class Cue(val text: String, val near: Boolean)
+    // Một phương án tuyến để chọn trước khi đi (trang Bản đồ): giây chạy (có tính kẹt xe), giây trễ do kẹt xe
+    class RouteOpt(val lat: DoubleArray, val lon: DoubleArray, val totalM: Double, val totalS: Double, val delayS: Double)
 
     // sign: mã hướng rẽ kiểu GraphHopper (giữ như bản VietMap để dùng lại câu đọc và mã Waze cho TurnGuide)
     private class Step(val sign: Int, val exit: Int, val street: String, val start: Int)
@@ -128,6 +130,55 @@ class HereNav(private val gps: LocationFallback) {
 
     // Toạ độ của một kết quả tìm kiếm (Autosuggest đã trả sẵn, không tốn thêm lượt gọi)
     fun place(refId: String): Pair<Double, Double>? = coords[refId].also { if (it == null) note = "Không có toạ độ của điểm này" }
+
+    // ---------- Xem trước 2–3 tuyến (gọi ngoài luồng UI, 1 lượt gọi HERE) ----------
+    // Trả các phương án nhanh nhất trước; chọn xong gọi startOpt(i) để đi theo đúng tuyến đó, không gọi lại HERE
+    @Volatile private var opts: List<Route> = emptyList()
+
+    fun previewRoutes(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): List<RouteOpt> {
+        opts = emptyList()
+        val key = apiKey.trim()
+        if (key.isEmpty()) { note = "Chưa có API key HERE"; return emptyList() }
+        for (withSpans in listOf(true, false)) {
+            try {
+                val u = String.format(Locale.US,
+                    "%s?transportMode=%s&origin=%.6f,%.6f&destination=%.6f,%.6f&alternatives=2&return=polyline,summary,turnByTurnActions%s&lang=vi-VN&apiKey=%s",
+                    ROUTE, vehicle, fromLat, fromLon, toLat, toLon, if (withSpans) "&spans=names,maxSpeed" else "", enc(key))
+                val (code, body) = get(u)
+                if (code == 400 && withSpans) continue
+                if (code != 200) { note = "Tính đường: ${httpNote(code)}"; return emptyList() }
+                val arr = JSONObject(body).optJSONArray("routes") ?: JSONArray()
+                val rs = ArrayList<Route>(); val out = ArrayList<RouteOpt>()
+                for (i in 0 until min(arr.length(), 3)) {
+                    val secs = arr.optJSONObject(i)?.optJSONArray("sections") ?: continue
+                    val r = parseRoute(secs) ?: continue
+                    var base = 0.0
+                    for (j in 0 until secs.length()) base += secs.optJSONObject(j)?.optJSONObject("summary")?.optDouble("baseDuration", 0.0) ?: 0.0
+                    rs.add(r); out.add(RouteOpt(r.lat, r.lon, r.totalM, r.totalS, if (base > 0) max(0.0, r.totalS - base) else 0.0))
+                }
+                // HERE trả tuyến chính trước; xếp lại theo thời gian để phương án 1 luôn nhanh nhất
+                val order = out.indices.sortedBy { out[it].totalS }
+                opts = order.map { rs[it] }
+                note = if (out.isEmpty()) "Không tìm được đường" else ""
+                return order.map { out[it] }
+            } catch (e: Throwable) {
+                note = "Tính đường: lỗi ${e.javaClass.simpleName}"
+                Log.w(TAG, "alternatives", e)
+                return emptyList()
+            }
+        }
+        return emptyList()
+    }
+
+    // Đi theo phương án i vừa xem trước. Lệch tuyến thì vẫn tự tính lại như thường
+    fun startOpt(i: Int, lat: Double, lon: Double, name: String) {
+        val r = opts.getOrNull(i)
+        start(lat, lon, name)
+        if (r != null) {
+            route = r
+            note = "Tới $name: ${fmtKm(r.totalM)}, ${(r.totalS / 60).roundToInt()} phút"
+        }
+    }
 
     // ---------- Bắt đầu / dừng ----------
     fun start(lat: Double, lon: Double, name: String) {
