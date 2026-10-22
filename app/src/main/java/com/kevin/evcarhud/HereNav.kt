@@ -1,6 +1,10 @@
 package com.kevin.evcarhud
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -9,6 +13,7 @@ import android.os.SystemClock
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -16,6 +21,10 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlin.math.atan2
+import kotlin.math.floor
+import kotlin.math.hypot
+import kotlin.math.ln
+import kotlin.math.tan
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -32,6 +41,8 @@ import kotlin.math.sqrt
 class HereNav(private val gps: LocationFallback) {
     class Place(val refId: String, val name: String, val address: String, val distKm: Double)
     class Cue(val text: String, val near: Boolean)
+    // Một phương án tuyến để chọn trước khi đi (trang Bản đồ): giây chạy (có tính kẹt xe), giây trễ do kẹt xe
+    class RouteOpt(val lat: DoubleArray, val lon: DoubleArray, val totalM: Double, val totalS: Double, val delayS: Double)
 
     // sign: mã hướng rẽ kiểu GraphHopper (giữ như bản VietMap để dùng lại câu đọc và mã Waze cho TurnGuide)
     private class Step(val sign: Int, val exit: Int, val street: String, val start: Int)
@@ -88,7 +99,7 @@ class HereNav(private val gps: LocationFallback) {
         if (key.isEmpty()) { note = "Chưa có API key HERE"; return emptyList() }
         if (text.isBlank()) return emptyList()
         // Autosuggest bắt buộc có vị trí tham chiếu: chưa có GPS thì lấy giữa Việt Nam
-        val p = gps.lastLatLon() ?: (16.0 to 106.0)
+        val p = gps.anyLatLon() ?: (16.0 to 106.0)
         try {
             val u = String.format(Locale.US, "%s?at=%.6f,%.6f&q=%s&lang=vi-VN&in=countryCode:VNM&limit=8&apiKey=%s",
                 SUGGEST, p.first, p.second, enc(text.trim()), enc(key))
@@ -120,6 +131,55 @@ class HereNav(private val gps: LocationFallback) {
 
     // Toạ độ của một kết quả tìm kiếm (Autosuggest đã trả sẵn, không tốn thêm lượt gọi)
     fun place(refId: String): Pair<Double, Double>? = coords[refId].also { if (it == null) note = "Không có toạ độ của điểm này" }
+
+    // ---------- Xem trước 2–3 tuyến (gọi ngoài luồng UI, 1 lượt gọi HERE) ----------
+    // Trả các phương án nhanh nhất trước; chọn xong gọi startOpt(i) để đi theo đúng tuyến đó, không gọi lại HERE
+    @Volatile private var opts: List<Route> = emptyList()
+
+    fun previewRoutes(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): List<RouteOpt> {
+        opts = emptyList()
+        val key = apiKey.trim()
+        if (key.isEmpty()) { note = "Chưa có API key HERE"; return emptyList() }
+        for (withSpans in listOf(true, false)) {
+            try {
+                val u = String.format(Locale.US,
+                    "%s?transportMode=%s&origin=%.6f,%.6f&destination=%.6f,%.6f&alternatives=2&return=polyline,summary,turnByTurnActions%s&lang=vi-VN&apiKey=%s",
+                    ROUTE, vehicle, fromLat, fromLon, toLat, toLon, if (withSpans) "&spans=names,maxSpeed" else "", enc(key))
+                val (code, body) = get(u)
+                if (code == 400 && withSpans) continue
+                if (code != 200) { note = "Tính đường: ${httpNote(code)}"; return emptyList() }
+                val arr = JSONObject(body).optJSONArray("routes") ?: JSONArray()
+                val rs = ArrayList<Route>(); val out = ArrayList<RouteOpt>()
+                for (i in 0 until min(arr.length(), 3)) {
+                    val secs = arr.optJSONObject(i)?.optJSONArray("sections") ?: continue
+                    val r = parseRoute(secs) ?: continue
+                    var base = 0.0
+                    for (j in 0 until secs.length()) base += secs.optJSONObject(j)?.optJSONObject("summary")?.optDouble("baseDuration", 0.0) ?: 0.0
+                    rs.add(r); out.add(RouteOpt(r.lat, r.lon, r.totalM, r.totalS, if (base > 0) max(0.0, r.totalS - base) else 0.0))
+                }
+                // HERE trả tuyến chính trước; xếp lại theo thời gian để phương án 1 luôn nhanh nhất
+                val order = out.indices.sortedBy { out[it].totalS }
+                opts = order.map { rs[it] }
+                note = if (out.isEmpty()) "Không tìm được đường" else ""
+                return order.map { out[it] }
+            } catch (e: Throwable) {
+                note = "Tính đường: lỗi ${e.javaClass.simpleName}"
+                Log.w(TAG, "alternatives", e)
+                return emptyList()
+            }
+        }
+        return emptyList()
+    }
+
+    // Đi theo phương án i vừa xem trước. Lệch tuyến thì vẫn tự tính lại như thường
+    fun startOpt(i: Int, lat: Double, lon: Double, name: String) {
+        val r = opts.getOrNull(i)
+        start(lat, lon, name)
+        if (r != null) {
+            route = r
+            note = "Tới $name: ${fmtKm(r.totalM)}, ${(r.totalS / 60).roundToInt()} phút"
+        }
+    }
 
     // ---------- Bắt đầu / dừng ----------
     fun start(lat: Double, lon: Double, name: String) {
@@ -317,9 +377,11 @@ class HereNav(private val gps: LocationFallback) {
         val p = gps.lastLatLon()
         val r = route
         if (r == null) {
-            if (p == null) note = "Chờ tín hiệu GPS để tính đường…"
+            // Tính đường chỉ cần điểm đi gần đúng: chưa có GPS (trong nhà) thì lấy vị trí theo mạng
+            val p0 = p ?: gps.anyLatLon()
+            if (p0 == null) note = "Chờ tín hiệu GPS để tính đường…"
             else if (fails >= MAX_FAILS) { active = false; turn = null }
-            else if (!busy && now - lastReq > RETRY_MS) requestRoute(now, p)
+            else if (!busy && now - lastReq > RETRY_MS) requestRoute(now, p0)
             return
         }
         if (p == null) return
@@ -422,6 +484,168 @@ class HereNav(private val gps: LocationFallback) {
     private val panel = RectF()
     private val mapR = RectF()
 
+    // ---------- Nền bản đồ: ô ảnh HERE Raster Tile v3 kiểu lite.night, nhuộm xanh, quay theo hướng tuyến ----------
+    // Mỗi ô 256 px tải một lần rồi giữ trong bộ nhớ (tối đa TILE_MAX ô); mỗi ô tải về tính một lượt gọi API.
+    // 4 luồng tải song song (1 luồng làm bản đồ trang 2 tải chậm, phóng to / thu nhỏ phải chờ vài giây)
+    private val tileExec = Executors.newFixedThreadPool(4)
+    private val tiles = object : LinkedHashMap<Long, Bitmap>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Bitmap>?) = size > TILE_MAX
+    }
+    private val tileWait = HashSet<Long>()
+    private var tileFailAt = 0L
+    private var tileFails = 0
+    private val trafficAt = HashMap<Long, Long>()   // lúc tải ô giao thông, quá 5 phút thì tải lại
+    private val tileP = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+        // độ sáng -> xanh ngọc: nền tối gần đen-xanh, đường sáng thành xanh nhạt
+        colorFilter = ColorMatrixColorFilter(ColorMatrix(floatArrayOf(
+            0.05f, 0.10f, 0.02f, 0f, 0f,
+            0.20f, 0.45f, 0.10f, 0f, 8f,
+            0.25f, 0.55f, 0.12f, 0f, 22f,
+            0f, 0f, 0f, 0.85f, 0f)))
+    }
+    private val tileDst = RectF()
+
+    private fun tileKey(z: Int, x: Int, y: Int, st: Int) = (st.toLong() shl 58) or (z.toLong() shl 50) or (x.toLong() shl 25) or y.toLong()
+
+    // Trang Bản đồ (toàn màn hình): ô kiểu explore.night hoặc ảnh vệ tinh, không nhuộm. Mỗi ô mới tải = 1 lượt gọi HERE
+    fun mapTile(z: Int, x: Int, y: Int, sat: Boolean): Bitmap? = tile(z, x, y, if (sat) 2 else 1)
+
+    // Lớp giao thông (HERE Traffic flow, ảnh trong suốt phủ lên bản đồ). Mỗi ô cũng tính một lượt gọi API
+    fun trafficTile(z: Int, x: Int, y: Int): Bitmap? = tile(z, x, y, 3)
+
+    // Chỉ lấy ô đã có trong bộ nhớ, không tải: vẽ tạm ô mức thấp hơn (phóng to) trong lúc ô đúng mức đang tải
+    fun cachedMapTile(z: Int, x: Int, y: Int, sat: Boolean): Bitmap? =
+        synchronized(tiles) { tiles[tileKey(z, x, y, if (sat) 2 else 1)] }
+
+    // style: 0 = lite.night (bản đồ nhỏ trên HUD), 1 = explore.night, 2 = satellite.day, 3 = giao thông
+    // Tiết kiệm lượt gọi HERE:
+    // - ô trang Bản đồ / giao thông xin cỡ 512 px (1 lượt = diện tích bằng 4 ô 256 px)
+    // - ô bản đồ / vệ tinh lưu xuống bộ nhớ máy (diskDir) 30 ngày: mở lại app, đi lại đường cũ không tốn lượt
+    // - ô lỗi không xin lại trong 60 s; HERE từ chối cả lớp (HTTP 4xx) thì ngừng lớp đó 10 phút
+    @Volatile var diskDir: File? = null
+    @Volatile var tileNote = ""
+        private set
+    private val failAt = HashMap<Long, Long>()
+    private val styleBadAt = LongArray(4) { -1_000_000L }
+    private var diskWrites = 0
+
+    private fun tileFile(z: Int, x: Int, y: Int, style: Int): File? =
+        diskDir?.let { File(it, "s${style}_${z}_${x}_$y") }
+
+    private fun tile(z: Int, x: Int, y: Int, style: Int = 0): Bitmap? {
+        val key = tileKey(z, x, y, style)
+        synchronized(tiles) {
+            val have = tiles[key]
+            val now = SystemClock.elapsedRealtime()
+            if (have != null && (style != 3 || now - (trafficAt[key] ?: 0L) < 300_000L)) return have
+            val k = apiKey.trim()
+            if (k.isEmpty() || key in tileWait || tileWait.size >= 24) return have
+            if (tileFails >= 3 && now - tileFailAt < 5_000L) return have
+            if (now - (failAt[key] ?: -1_000_000L) < 60_000L) return have
+            if (now - styleBadAt[style] < 600_000L) return have
+            tileWait.add(key)
+            tileExec.execute {
+                var bmp: Bitmap? = null
+                var bad = 0
+                val opt = BitmapFactory.Options().apply { if (style == 1 || style == 2) inPreferredConfig = Bitmap.Config.RGB_565 }
+                val f = if (style == 3) null else tileFile(z, x, y, style)
+                try {
+                    // 1) bộ nhớ máy (không tốn lượt gọi)
+                    if (f != null && f.exists() && System.currentTimeMillis() - f.lastModified() < DISK_DAYS * 86_400_000L)
+                        bmp = BitmapFactory.decodeFile(f.absolutePath, opt)
+                    // 2) tải từ HERE
+                    if (bmp == null) {
+                        val sz = if (style == 0) "" else "&size=512"
+                        val url = if (style == 3) String.format(Locale.US, "%s/%d/%d/%d/png?apiKey=%s%s", TRAFFIC_TILE, z, x, y, enc(k), sz)
+                        else {
+                            val fmt = when (style) { 1 -> "png8?style=explore.night"; 2 -> "jpeg?style=satellite.day"; else -> "png8?style=lite.night" }
+                            String.format(Locale.US, "%s/%d/%d/%d/%s%s&apiKey=%s", TILE, z, x, y, fmt, sz, enc(k))
+                        }
+                        val c = URL(url).openConnection() as HttpURLConnection
+                        // không gọi disconnect(): giữ kết nối để ô sau dùng lại, khỏi bắt tay TLS mỗi ô
+                        c.connectTimeout = 6000
+                        c.readTimeout = 8000
+                        calls++
+                        val code = c.responseCode
+                        if (code == 200) {
+                            val bytes = c.inputStream.use { it.readBytes() }
+                            // ô trang bản đồ không cần độ trong suốt: RGB_565 tốn một nửa bộ nhớ
+                            bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opt)
+                            if (bmp != null && f != null) saveTile(f, bytes)
+                        } else {
+                            Log.w("HereNav", "tile HTTP $code (lớp $style)")
+                            c.errorStream?.close()
+                            if (code in 400..499 && code != 429) bad = code
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("HereNav", "tile lỗi: ${e.message}")
+                }
+                synchronized(tiles) {
+                    tileWait.remove(key)
+                    val t = SystemClock.elapsedRealtime()
+                    if (bmp != null) {
+                        tiles[key] = bmp!!; tileFails = 0
+                        if (style == 3) trafficAt[key] = t
+                    } else {
+                        tileFails++; tileFailAt = t
+                        failAt[key] = t
+                        if (failAt.size > 500) failAt.clear()
+                        if (bad != 0) {
+                            styleBadAt[style] = t
+                            val nm = when (style) { 1 -> "Bản đồ"; 2 -> "Vệ tinh"; 3 -> "Giao thông"; else -> "Bản đồ nhỏ" }
+                            tileNote = "HERE từ chối lớp $nm (HTTP $bad), tạm ngừng tải lớp này 10 phút"
+                        }
+                    }
+                }
+            }
+            return have
+        }
+    }
+
+    private fun saveTile(f: File, bytes: ByteArray) {
+        try {
+            f.parentFile?.mkdirs()
+            f.writeBytes(bytes)
+            // khoảng 300 lần ghi thì dọn: giữ tối đa DISK_MAX byte, xoá ô cũ nhất trước
+            if (++diskWrites % 300 == 1) {
+                val all = f.parentFile?.listFiles()?.sortedByDescending { it.lastModified() } ?: return
+                var sum = 0L
+                for (x in all) { sum += x.length(); if (sum > DISK_MAX) x.delete() }
+            }
+        } catch (e: Exception) {
+            Log.w("HereNav", "lưu ô: ${e.message}")
+        }
+    }
+
+    // Vẽ các ô quanh vị trí xe trong hệ toạ độ đã quay (gốc tại xe, trục y hướng nam), s = px màn hình / mét
+    private fun drawTiles(canvas: Canvas, s: Double, radiusPx: Float, rangeM: Double) {
+        if (apiKey.isBlank()) return
+        val z = if (rangeM > 600.0) 15 else 16
+        val world = 256.0 * (1 shl z)
+        val latR = Math.toRadians(snapLat)
+        val gx = (snapLon + 180.0) / 360.0 * world
+        val gy = (1.0 - ln(tan(latR) + 1.0 / cos(latR)) / Math.PI) / 2.0 * world
+        val f = s * 156_543.034 * cos(latR) / (1 shl z)       // px màn hình cho mỗi px ô ở mức z
+        val span = radiusPx / f
+        val tx0 = floor((gx - span) / 256.0).toInt(); val tx1 = floor((gx + span) / 256.0).toInt()
+        val ty0 = floor((gy - span) / 256.0).toInt(); val ty1 = floor((gy + span) / 256.0).toInt()
+        val n = 1 shl z
+        for (ty in ty0..ty1) for (tx in tx0..tx1) {
+            if (ty < 0 || ty >= n) continue
+            val b = tile(z, ((tx % n) + n) % n, ty) ?: continue
+            val l = ((tx * 256.0 - gx) * f).toFloat(); val t = ((ty * 256.0 - gy) * f).toFloat()
+            val sz = (256.0 * f).toFloat()
+            tileDst.set(l, t, l + sz + 0.5f, t + sz + 0.5f)
+            canvas.drawBitmap(b, null, tileDst, tileP)
+        }
+    }
+
+    // Cho trang Bản đồ: tuyến đang đi, vị trí đã khớp vào tuyến, hướng đi (rad, từ bắc theo chiều kim đồng hồ)
+    fun routeLat(): DoubleArray? = if (active) cur?.lat else null
+    fun routeLon(): DoubleArray? = if (active) cur?.lon else null
+    fun egoOnRoute(): Triple<Double, Double, Double>? = if (active && cur != null && idx >= 0) Triple(snapLat, snapLon, heading) else null
+
     fun drawPanel(canvas: Canvas, k: Float, x: Float, y: Float, w: Float, h: Float, speedKmh: Float) {
         if (!active || !showMini) return
         val r = cur ?: return
@@ -451,6 +675,11 @@ class HereNav(private val gps: LocationFallback) {
         canvas.save()
         canvas.clipRect(mapR)
         canvas.drawRoundRect(mapR, 12f * k, 12f * k, mapBg)
+        canvas.save()
+        canvas.translate(cx, egoY)
+        canvas.rotate(-Math.toDegrees(heading).toFloat())
+        drawTiles(canvas, s.toDouble(), hypot(mapR.width() / 2f, egoY - mapR.top) + 8f * k, rangeM)
+        canvas.restore()
         val n = r.lat.size
         // Đoạn đã đi (mờ)
         path.reset()
@@ -635,6 +864,11 @@ class HereNav(private val gps: LocationFallback) {
         private const val TAG = "HereNav"
         private const val SUGGEST = "https://autosuggest.search.hereapi.com/v1/autosuggest"
         private const val ROUTE = "https://router.hereapi.com/v8/routes"
+        private const val TILE = "https://maps.hereapi.com/v3/base/mc"
+        private const val TILE_MAX = 160
+        private const val DISK_DAYS = 30L
+        private const val DISK_MAX = 200L * 1024 * 1024
+        private const val TRAFFIC_TILE = "https://traffic.maps.hereapi.com/v3/flow/mc"
         private const val FLEX = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
         const val UPDATE_MS = 300L
         const val OFF_M = 45.0

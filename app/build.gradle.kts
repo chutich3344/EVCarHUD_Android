@@ -20,6 +20,16 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Khoá debug cố định trong repo: APK build trên GitHub và build ở máy nhà cài đè lên nhau được (giữ cài đặt, key HERE)
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             optimization {
@@ -49,6 +59,8 @@ android {
 
 
 dependencies {
+    // Đọc webcam / camera USB chuẩn UVC qua OTG (Maven Central) cho máy không hỗ trợ camera ngoài qua Camera2
+    implementation("com.herohan:UVCAndroid:1.0.13")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

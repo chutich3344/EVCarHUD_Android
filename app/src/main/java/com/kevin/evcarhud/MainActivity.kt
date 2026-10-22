@@ -86,6 +86,7 @@ import androidx.compose.runtime.LaunchedEffect
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -121,13 +122,15 @@ private const val AUTO_SIGN = 1f        // đổi thành -1f nếu chân trời 
 private const val WARMUP = 40           // số lần suy luận đầu không tự chỉnh
 private const val AUTO_MIN_SPEED = 5.5f // m/s (~20 km/h): chỉ tự chỉnh khi đủ nhanh (chạy trong phố cũng chỉnh được)
 private const val STEP_US = 50_000L     // model được huấn luyện với bước đúng 50 ms (20 Hz)
+private const val DIM_STILL_MS = 20_000L  // đứng yên bao lâu thì giảm sáng màn hình
+private const val DIM_BRIGHTNESS = 0.08f  // độ sáng khi giảm (0..1)
 private const val SPEED_EMA = 0.9f      // làm mượt tốc độ hiển thị
 private const val THERMAL_POLL_MS = 2000L
 private const val STATUS_MS = 500L      // chu kỳ cập nhật dòng trạng thái (đỡ recomposition + log)
 private const val RESYNC_NS = 250_000_000L  // trễ quá 250 ms thì đồng bộ lại đồng hồ phát, không "tua nhanh"
 private const val STALL_MS = 5000L      // camera không ra khung nào quá 5 s -> coi là treo, tự mở lại
 private const val YOLO_ROI_W = 0.8f   // YOLO nhìn dải giữa khung (đường phía trước) rộng 80% chiều ngang; 1f = toàn khung
-private const val HOOD_DEFAULT = 0.15f  // mặc định che 15% đáy khung (capo khi đặt máy trên taplo); chỉnh bằng thanh trượt
+private const val HOOD_DEFAULT = 0.15f  // mặc định che 15% đáy khung (capo khi đặt máy trên taplo); chọn 5 / 10 / 15% trong Cài đặt
 private const val STREAM_DEFAULT = "rtsp://192.168.0.1:554/livestream/12"  // 70mai (M300/M310…); chip Novatek: rtsp://192.168.1.254/xxx.mov
 
 // Nguồn camera trực tiếp
@@ -188,6 +191,9 @@ class Runner(private val ctx: Context) {
     var coolTarget by mutableStateOf(prefs.getFloat("coolTarget", 40f).coerceIn(35f, 45f))
     var capFps by mutableStateOf(true)       // phát đúng nhịp thời gian thực của video
     var thermalLine by mutableStateOf("")
+    // Dòng hiệu năng trên HUD (luồng nhiệt ghi, luồng vẽ đọc)
+    @Volatile private var perfText = ""
+    @Volatile private var perfCpu = Float.NaN
     var warnOn by mutableStateOf(true)        // cảnh báo va chạm (tiếng tít + viền đỏ)
     var alertFlash by mutableStateOf(false)   // pha "sáng" của viền đỏ chớp
     var cautionOn by mutableStateOf(false)    // viền vàng "chú ý" (không tiếng)
@@ -240,6 +246,9 @@ class Runner(private val ctx: Context) {
     // CPU không phải đổi YUV -> RGB và vẽ HUD lên bitmap mỗi khung nữa (nguồn nóng chính theo nhật ký nhiệt)
     var gpuPreview by mutableStateOf(prefs.getBoolean("gpuPreview", true))
     @Volatile var previewTexture: SurfaceTexture? = null
+    // Xe đứng yên quá 20 s: giảm độ sáng màn hình cho mát máy (màn hình là nguồn nóng lớn); xe chạy hoặc có cảnh báo là sáng lại
+    var dimStill by mutableStateOf(prefs.getBoolean("dimStill", true))
+    var dimNow by mutableStateOf(false)
     var previewing by mutableStateOf(false)
     var frameAspect by mutableStateOf(16f / 9f)
     @Volatile var hudSink: ((Picture?) -> Unit)? = null
@@ -249,6 +258,8 @@ class Runner(private val ctx: Context) {
         previewTexture = st
         val src = curSrc
         if (src is CameraSource && camKind == CamKind.PHONE && running && useCamera &&
+            (if (st != null) gpuPreview && !src.previewing else src.previewing)) restartCamera()
+        else if (src is UsbCamSource && camKind == CamKind.USB && running && useCamera &&
             (if (st != null) gpuPreview && !src.previewing else src.previewing)) restartCamera()
     }
     fun restartCamera() { if (running && useCamera) { running = false; startCamera() } }
@@ -277,7 +288,8 @@ class Runner(private val ctx: Context) {
             .putInt("alertSound", alertSound).putBoolean("collect", collectData).putString("hereKey", hereKey.trim())
             .putFloat("camH", camH).putBoolean("reflect", reflect)
             .putInt("navVehicle", navVehicle).putBoolean("miniMap", miniMap)
-            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).apply()
+            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview)
+            .putBoolean("dimStill", dimStill).apply()
         here.apiKey = hereKey
         nav.apiKey = hereKey
         nav.vehicle = if (navVehicle == 1) "scooter" else "car"
@@ -293,7 +305,7 @@ class Runner(private val ctx: Context) {
     val weather = WeatherInfo(gps)            // thời tiết hiện tại (Open-Meteo) cho góc trái HUD
     val here = HereGeo(gps)
     // Chỉ đường HERE (tìm điểm đến, mũi tên rẽ, bản đồ nhỏ); 0 = ô tô, 1 = xe máy
-    val nav = HereNav(gps)
+    val nav = HereNav(gps).apply { diskDir = File(ctx.cacheDir, "tiles") }
     var navVehicle by mutableStateOf(prefs.getInt("navVehicle", 0).coerceIn(0, 1))
     var miniMap by mutableStateOf(prefs.getBoolean("miniMap", true))
 
@@ -520,7 +532,7 @@ class Runner(private val ctx: Context) {
                 val bmp = ring[ri] ?: Bitmap.createBitmap(DW, dh, Bitmap.Config.ARGB_8888).also { ring[ri] = it }
                 val nowConv = SystemClock.elapsedRealtime()
                 // Hình đang qua GPU: bitmap chỉ dùng cho ảnh cảnh báo / huấn luyện nên cũng chỉ đổi 4 lần/giây
-                val gpuShow = (dec as? CameraSource)?.previewing == true
+                val gpuShow = (dec as? CameraSource)?.previewing == true || (dec as? UsbCamSource)?.previewing == true
                 var shownBmp = lastBmp
                 if (shownBmp == null || shownBmp.height != dh || !(HudRenderer.reflect || gpuShow) || nowConv - lastConv >= REFLECT_CONV_MS) {
                     conv.convert(yuv, DW, dh, rgb)
@@ -591,6 +603,13 @@ class Runner(private val ctx: Context) {
                         else if (++calm >= 3) { held--; calm = 0 }   // 3 lần đọc liền (6 s) thấp hơn mới hạ mức
                         applyThermal(held)
                         thermalLine = thermalText(ti, held)
+                        perfCpu = cpuEma
+                        perfText = buildString {
+                            append("CPU ").append(if (cpuEma.isNaN()) "--" else cpuEma.roundToInt().toString()).append("°C")
+                            append(" · PIN ").append(if (ti.batteryC.isNaN()) "--" else ti.batteryC.roundToInt().toString()).append("°C")
+                            append(" · NPU ").append(npuRate()).append("/s")
+                            append(" · YOLO ").append(yoloHz.roundToInt()).append("/s")
+                        }
                         // Mức 3 trở lên: nhắc người lái một lần mỗi 10 phút
                         if (thermalAuto && held >= 3 && c - hotSaid > 600_000L) {
                             hotSaid = c
@@ -700,6 +719,7 @@ class Runner(private val ctx: Context) {
         var overSince = -1L       // bắt đầu vượt tốc độ (ms)
         var overSaid = -1_000_000L
         idle = false
+        dimNow = false
         while (run.alive) {
             val job = frameQ.poll(100, TimeUnit.MILLISECONDS)
             if (job == null) {
@@ -707,7 +727,7 @@ class Runner(private val ctx: Context) {
                 // Tạm nghỉ làm mát: luồng A cố ý không đẩy khung, không phải camera treo (trước đây bị mở lại camera liên tục)
                 if (coolPause) { lastFrameAt = SystemClock.elapsedRealtime(); continue }
                 if (live && SystemClock.elapsedRealtime() - lastFrameAt > STALL_MS) {
-                    status = "Camera treo, đang mở lại..."
+                    status = "Camera treo, đang mở lại..." + ((curSrc as? UsbCamSource)?.info()?.let { " ($it)" } ?: "")
                     break
                 }
                 continue
@@ -767,7 +787,8 @@ class Runner(private val ctx: Context) {
                     // Chạy thử tuyến: cảnh báo chỉ theo tốc độ camera (xe ảo 40 km/h không được làm kêu khi máy đang để yên)
                     if (gps.mocking) r.speedKmh else maxOf(spd, r.speedKmh),
                     job.h, hoodCut, roadMode, weather.wet, frameAlert, nav,
-                    if (live || gps.mocking) gps.quality() else 2, camState)
+                    if (live || gps.mocking) gps.quality() else 2, camState,
+                    perfText, perfCpu >= 70f)
                 pk.endRecording()
                 pic = pk
                 if (r.yoloMs >= 0) lastYoloMs = r.yoloMs
@@ -842,6 +863,8 @@ class Runner(private val ctx: Context) {
             // Đứng yên hơn 3 s: giảm tải
             if (logWarn < 2f) { if (stillSince < 0L) stillSince = nowMs; idle = nowMs - stillSince > 3000L }
             else { stillSince = -1L; idle = false }
+            val dim = live && stillSince >= 0L && nowMs - stillSince > DIM_STILL_MS && nowMs >= alertUntil && nowMs >= cautionUntil
+            if (dimNow != dim) dimNow = dim
             val alert = warnOn && nowMs < alertUntil
             val cautionNow = warnOn && !alert && nowMs < cautionUntil
             if (cautionOn != cautionNow) cautionOn = cautionNow
@@ -939,8 +962,8 @@ class Runner(private val ctx: Context) {
         if (!live) return VideoDecoder(ctx, uri!!)
         return when (camKind) {
             CamKind.PHONE -> CameraSource(ctx) { run.alive }.also { if (gpuPreview) it.previewTexture = previewTexture }
-            // Camera USB qua Camera2 (chỉ máy nào hỗ trợ sẵn). Thư viện UVC tạm bỏ vì chưa tải được từ JitPack.
-            CamKind.USB -> CameraSource(ctx, external = true) { run.alive }
+            // Camera USB: đọc thẳng chuẩn UVC (webcam, module camera USB), không được mới thử Camera2 camera ngoài
+            CamKind.USB -> UsbCamSource(ctx) { run.alive }.also { if (gpuPreview) it.previewTexture = previewTexture }
             CamKind.WIFI -> NetStreamSource(ctx, streamUrl.trim()) { run.alive }
         }
     }
@@ -978,6 +1001,7 @@ class Runner(private val ctx: Context) {
                 HudRenderer.resetRisk()
                 bp = BeepPlayer(beepVolume.toInt())
                 beeper = bp
+                ModelFiles.onProgress = { status = it }
                 if (engine == null) {
                     status = "Đang nạp model lên NPU (không có cache sẽ mất ~13 phút)..."
                     val e = DrivingEngine(ctx)
@@ -1066,13 +1090,15 @@ private fun FrameView(runner: Runner, modifier: Modifier, scale: ContentScale) {
 // Hình camera điện thoại qua GPU. Camera2 đẩy hình vào SurfaceTexture theo chiều dọc tự nhiên của máy;
 // app khoá ngang nên xoay lại ±90° và bù tỉ lệ (khung View đã cùng tỉ lệ với ảnh camera)
 @Composable
-private fun CameraTexture(runner: Runner, modifier: Modifier) {
+private fun CameraTexture(runner: Runner, modifier: Modifier, rotate: Boolean = true) {
     AndroidView(modifier = modifier, factory = { c ->
         TextureView(c).apply {
             fun fix() {
                 val vw = width.toFloat()
                 val vh = height.toFloat()
                 if (vw <= 0f || vh <= 0f) return
+                // Webcam USB: thư viện vẽ đúng chiều, khung View đã cùng tỉ lệ ảnh nên không cần biến đổi
+                if (!rotate) { setTransform(null); return }
                 @Suppress("DEPRECATION")
                 // App khoá ngang: máy báo dọc (0) thì coi như ngang chiều thường, giống CameraSource
                 val rot = (display?.rotation ?: Surface.ROTATION_90).let { if (it == Surface.ROTATION_0) Surface.ROTATION_90 else it }
@@ -1273,6 +1299,19 @@ private fun RoadModePicker(runner: Runner) {
     }
 }
 
+// Vùng capo che đáy khung: 3 mức 5 / 10 / 15%
+private val HOOD_STEPS = floatArrayOf(0.05f, 0.10f, 0.15f)
+
+@Composable
+private fun HoodPicker(runner: Runner) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+        RowTitle("Che vùng capo")
+        val sel = HOOD_STEPS.indices.minByOrNull { abs(HOOD_STEPS[it] - runner.hoodCut) } ?: 2
+        Segmented(listOf("5%", "10%", "15%"), sel) { runner.hoodCut = HOOD_STEPS[it]; runner.savePrefs() }
+        Desc("Phần đáy khung bị capo/taplo che: không nhận diện, không cảnh báo. Chọn mức cho vạch trắng nằm sát mép capo.", top = 6)
+    }
+}
+
 // Ô chọn nguồn camera (dạng nút phân đoạn)
 @Composable
 private fun SourcePicker(runner: Runner) {
@@ -1339,9 +1378,7 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             RowLine(); NavRow("Thử âm báo", onClick = { runner.testSound() })
             RowLine(); NavRow("Xem lại cảnh báo", desc = "Ảnh 2 s trước và sau mỗi lần cảnh báo; đánh dấu đúng / nhầm để chỉnh ngưỡng.", onClick = onReview)
             RowLine(); RoadModePicker(runner)
-            RowLine(); SliderRow("Che vùng capo", "${(runner.hoodCut * 100).roundToInt()}%", runner.hoodCut, 0f..0.45f,
-                "0%", "45%", "Phần đáy khung bị capo/taplo che: không nhận diện, không cảnh báo. Kéo cho vạch trắng nằm ngay mép capo. Mặc định 15%.",
-                onChange = { runner.hoodCut = it }, onDone = { runner.savePrefs() })
+            RowLine(); HoodPicker(runner)
         }
 
         SectionTitle("Bản đồ HERE")
@@ -1394,6 +1431,8 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
         SectionTitle("Hiệu năng")
         SettingsCard {
             SwitchRow("Tự giảm tải khi nóng", "Giãn nhịp YOLO và NPU theo nhiệt độ máy.", runner.thermalAuto) { runner.thermalAuto = it }
+            RowLine(); SwitchRow("Giảm sáng khi đứng yên", "Xe dừng quá 20 giây thì màn hình tối bớt cho mát máy. Xe chạy hoặc có cảnh báo là sáng lại ngay.",
+                runner.dimStill) { runner.dimStill = it; runner.savePrefs() }
             RowLine(); SliderRow("Nhiệt độ mục tiêu", "${runner.coolTarget.roundToInt()}°C", runner.coolTarget, 35f..45f,
                 "35°C", "45°C",
                 "Pin gần tới mức này thì app giãn nhịp YOLO trước, vượt quá thì hạ NPU còn 10 Hz. Đặt thấp thì máy mát hơn nhưng hộp nhận diện cập nhật chậm hơn. " +
@@ -1421,8 +1460,14 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
         SettingsCard {
             NavRow("Trạng thái hoạt động", desc = runner.status)
             if (runner.thermalLine.isNotEmpty()) { RowLine(); NavRow("Nhiệt độ", desc = runner.thermalLine) }
-            RowLine(); NavRow("Nhật ký nhiệt", desc = runner.thermalLog.file?.let { "${runner.thermalLog.rows} dòng (10 s/dòng): ${it.absolutePath}" }
-                ?: "Ghi mỗi 10 s khi app chạy, vào ${runner.thermalLog.dir.absolutePath}")
+            val shareCtx = LocalContext.current
+            RowLine(); NavRow("Nhật ký nhiệt", desc = (runner.thermalLog.file?.let { "${runner.thermalLog.rows} dòng (10 s/dòng): ${it.name}" }
+                ?: "Ghi mỗi 10 s khi app chạy.") + " Bấm để gửi file qua Zalo, Gmail, Drive...") {
+                if (!runner.thermalLog.share(shareCtx)) runner.status = "Chưa có file nhật ký nhiệt"
+            }
+            RowLine(); NavRow("Lưu nhật ký vào Download", desc = "Chép file nhật ký mới nhất vào Download/EVCarHUD trên máy.") {
+                runner.status = runner.thermalLog.saveToDownloads(shareCtx)?.let { "Đã lưu $it" } ?: "Chưa có file nhật ký nhiệt hoặc lưu lỗi"
+            }
             if (runner.lastExit.isNotEmpty()) { RowLine(); NavRow("Lần thoát trước", desc = runner.lastExit) }
             RowLine(); NavRow("GPS", desc = runner.gps.statusText())
         }
@@ -1629,6 +1674,14 @@ class MainActivity : ComponentActivity() {
                 ) { uri -> if (uri != null) pendingVideo = uri else runner.cancelPick() }
                 val land = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
+                // Đứng yên lâu: hạ độ sáng màn hình (chỉ trong app, không đổi cài đặt máy)
+                val dimScreen = runner.dimStill && runner.dimNow && runner.running
+                LaunchedEffect(dimScreen) {
+                    val a = window.attributes
+                    a.screenBrightness = if (dimScreen) DIM_BRIGHTNESS else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    window.attributes = a
+                }
+
                 // Xoay ngang: ẩn thanh hệ thống (vuốt mép để gọi lại), video chiếm toàn màn hình
                 SideEffect {
                     val c = WindowInsetsControllerCompat(window, window.decorView)
@@ -1643,6 +1696,8 @@ class MainActivity : ComponentActivity() {
                 var showSettings by remember { mutableStateOf(false) }
                 var showReview by remember { mutableStateOf(false) }
                 var showNav by remember { mutableStateOf(false) }
+                // Trang 2: bản đồ trạm sạc toàn màn hình (camera và cảnh báo vẫn chạy nền)
+                var showMap by rememberSaveable { mutableStateOf(false) }
                 var showCalib by remember { mutableStateOf(false) }
                 var calibText by remember { mutableStateOf("") }
                 var calibMsg by remember { mutableStateOf<String?>(null) }
@@ -1677,9 +1732,14 @@ class MainActivity : ComponentActivity() {
                             Modifier.aspectRatio(runner.frameAspect)
                                 .then(if (runner.reflect) Modifier.graphicsLayer { scaleX = -1f } else Modifier)
                         ) {
-                            if (runner.gpuPreview && runner.camKind == CamKind.PHONE) CameraTexture(runner, Modifier.fillMaxSize())
-                            FrameView(runner, Modifier.fillMaxSize(), ContentScale.FillBounds)
-                            HudOverlay(runner, Modifier.fillMaxSize())
+                            // Camera điện thoại và webcam USB đều vẽ hình qua GPU; key: đổi nguồn thì tạo lại (cách xoay khác nhau)
+                            if (runner.gpuPreview && (runner.camKind == CamKind.PHONE || runner.camKind == CamKind.USB))
+                                key(runner.camKind) { CameraTexture(runner, Modifier.fillMaxSize(), rotate = runner.camKind == CamKind.PHONE) }
+                            // Đang ở trang Bản đồ: không vẽ HUD bên dưới cho đỡ tốn GPU (TextureView camera giữ nguyên, không phải mở lại camera)
+                            if (!showMap) {
+                                FrameView(runner, Modifier.fillMaxSize(), ContentScale.FillBounds)
+                                HudOverlay(runner, Modifier.fillMaxSize())
+                            }
                         }
                         if (runner.frame == null && !runner.previewing) {
                             Column(
@@ -1707,6 +1767,8 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+
+                    if (showMap) MapPage(runner) { showMap = false }
 
                     if (showNav) {
                         NavPanel(runner, land) { showNav = false }
@@ -1754,8 +1816,24 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Text(if (showSettings || showNav) "✕" else "⚙", color = Color.White, fontSize = 22.sp)
                     }
+                    // Nút sang trang Bản đồ trạm sạc
+                    if (!showSettings && !showNav && !showMap) {
+                        Box(
+                            Modifier
+                                .align(Alignment.TopEnd)
+                                .statusBarsPadding()
+                                .padding(top = 10.dp, end = 114.dp)
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(Color(0x66000000))
+                                .clickable { showMap = true },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("🗺", color = Color.White, fontSize = 20.sp)
+                        }
+                    }
                     // Nút chỉ đường nhanh (cạnh nút cài đặt)
-                    if (!showSettings && !showNav) {
+                    if (!showSettings && !showNav && !showMap) {
                         Box(
                             Modifier
                                 .align(Alignment.TopEnd)

@@ -120,7 +120,8 @@ class YoloDetector(private val context: Context) {
                 t
             }
         } catch (_: Throwable) { -1L }
-        if (!file.exists() || (assetLen > 0 && file.length() != assetLen)) {
+        if (assetLen < 0) return ModelFiles.ensure(context, MODEL)   // APK không kèm model: tải lần đầu
+        if (!file.exists() || file.length() != assetLen) {
             context.assets.open(MODEL).use { i -> file.outputStream().use { i.copyTo(it) } }
             File(context.filesDir, CTX).delete()
         }

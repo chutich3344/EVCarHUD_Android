@@ -1,6 +1,10 @@
 package com.kevin.evcarhud
 
+import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
+import android.provider.MediaStore
+import androidx.core.content.FileProvider
 import android.util.Log
 import java.io.BufferedWriter
 import java.io.File
@@ -21,6 +25,48 @@ class ThermalLog(private val ctx: Context) {
         private set
 
     val dir: File get() = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "thermal")
+
+    // Gửi file nhật ký mới nhất (lần chạy này, không thì lần trước) qua Zalo / Gmail / Drive...
+    // Android 16 không cho app quản lý file mở Android/data nên chia sẻ thẳng từ app. Trả về false nếu chưa có file.
+    fun share(from: Context): Boolean {
+        val f = file?.takeIf { it.exists() }
+            ?: dir.listFiles { x -> x.name.endsWith(".csv") }?.maxByOrNull { it.lastModified() }
+            ?: return false
+        try { out?.flush() } catch (_: Throwable) {}
+        val uri = FileProvider.getUriForFile(from, from.packageName + ".files", f)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/csv"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, f.name)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        from.startActivity(Intent.createChooser(send, "Gửi nhật ký nhiệt").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        return true
+    }
+
+    // Lưu bản sao file nhật ký mới nhất vào thư mục Download của máy (Android 10+ không cần xin quyền).
+    // Trả về tên file đã lưu, hoặc null nếu chưa có file / lưu lỗi.
+    fun saveToDownloads(from: Context): String? {
+        val f = file?.takeIf { it.exists() }
+            ?: dir.listFiles { x -> x.name.endsWith(".csv") }?.maxByOrNull { it.lastModified() }
+            ?: return null
+        try { out?.flush() } catch (_: Throwable) {}
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, f.name)
+            put(MediaStore.MediaColumns.MIME_TYPE, "text/csv")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/EVCarHUD")
+        }
+        val resolver = from.contentResolver
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+        return try {
+            resolver.openOutputStream(uri)?.use { o -> f.inputStream().use { it.copyTo(o) } } ?: throw IllegalStateException("no stream")
+            "Download/EVCarHUD/" + f.name
+        } catch (e: Throwable) {
+            Log.w("ThermalLog", "lưu vào Download lỗi", e)
+            try { resolver.delete(uri, null, null) } catch (_: Throwable) {}
+            null
+        }
+    }
 
     // Vùng nhiệt CPU trong /sys (nhiều máy chặn quyền đọc: khi đó cột cpu_C để trống)
     private val cpuZones: List<File> by lazy {
