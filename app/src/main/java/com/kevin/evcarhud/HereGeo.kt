@@ -15,20 +15,19 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 // Tên đường + giới hạn tốc độ theo GPS từ HERE Reverse Geocoding (một lượt gọi lấy cả hai).
-// GET https://revgeocode.search.hereapi.com/v1/revgeocode?at=lat,lng&types=street&lang=vi-VN&showNavAttributes=speedLimits&apiKey=…
-// API key nhập trong Cài đặt (chỉ để test; bản thương mại gọi qua máy chủ riêng giữ key).
+// GET https://revgeocode.search.hereapi.com/v1/revgeocode?at=lat,lng&types=street&lang=vi-VN&showNavAttributes=speedLimits
+// Gọi qua máy chủ riêng giữ key (HereApi).
 // Tiết kiệm lượt gọi:
 //  - không gọi khi xe chạy dưới 10 km/h (đèn đỏ, kẹt xe, đỗ xe)
 //  - chỉ gọi khi đi thêm >= 150 m (trong phố) / >= 400 m (trên 70 km/h), hoặc hướng xe đổi > 35° sau >= 30 m (vừa rẽ)
 //  - cách nhau tối thiểu 8 s
 //  - đang chỉ đường thì MainActivity lấy tên đường + tốc độ từ tuyến đã tải (HereNav), không gọi ở đây
 class HereGeo(private val gps: LocationFallback) {
-    @Volatile var apiKey = ""
     private val exec = Executors.newSingleThreadExecutor()
     @Volatile private var road = ""
     @Volatile private var limit = 0
     @Volatile private var busy = false
-    @Volatile var note = "chưa có API key"
+    @Volatile var note = ""
         private set
     @Volatile var calls = 0
         private set
@@ -46,8 +45,6 @@ class HereGeo(private val gps: LocationFallback) {
 
     // Gọi thường xuyên từ luồng hiển thị: trả tên đường gần nhất, tự hẹn lần tra kế tiếp
     fun street(speedKmh: Float): String {
-        val key = apiKey.trim()
-        if (key.isEmpty()) { note = "chưa có API key"; return "" }
         val p = gps.lastLatLon()
         if (p != null) {
             if (pLat.isNaN()) { pLat = p.first; pLon = p.second }
@@ -64,26 +61,26 @@ class HereGeo(private val gps: LocationFallback) {
                     busy = true
                     at = now
                     lat0 = p.first; lon0 = p.second; brg0 = brg
-                    exec.execute { try { fetch(key, p.first, p.second) } finally { busy = false } }
+                    exec.execute { try { fetch(p.first, p.second) } finally { busy = false } }
                 }
             }
         }
         return if (SystemClock.elapsedRealtime() - gotAt < STALE_MS) road else ""
     }
 
-    private fun fetch(key: String, lat: Double, lon: Double) {
+    private fun fetch(lat: Double, lon: Double) {
         try {
-            var r = get(url(key, lat, lon, navAttrs))
+            var r = get(url(lat, lon, navAttrs))
             if (navAttrs && r.first == 400) {
                 // Gói / phiên bản API không nhận showNavAttributes: bỏ đi, chỉ lấy tên đường
                 navAttrs = false
-                r = get(url(key, lat, lon, false))
+                r = get(url(lat, lon, false))
             }
             val (code, body) = r
             if (code != 200) {
                 note = when (code) {
-                    401, 403 -> "API key sai hoặc chưa mở dịch vụ (HTTP $code)"
-                    429 -> "hết lượt gọi (HTTP 429)"
+                    401, 403 -> "máy chủ từ chối (HTTP $code)"
+                    429 -> "gọi quá nhiều, thử lại sau (HTTP 429)"
                     else -> "HERE lỗi HTTP $code"
                 }
                 return
@@ -113,12 +110,12 @@ class HereGeo(private val gps: LocationFallback) {
         }
     }
 
-    private fun url(key: String, lat: Double, lon: Double, nav: Boolean): String =
-        String.format(Locale.US, "https://revgeocode.search.hereapi.com/v1/revgeocode?at=%.6f,%.6f&types=street&lang=vi-VN%s&apiKey=%s",
-            lat, lon, if (nav) "&showNavAttributes=speedLimits" else "", URLEncoder.encode(key, "UTF-8"))
+    private fun url(lat: Double, lon: Double, nav: Boolean): String =
+        String.format(Locale.US, "%s/revgeocode.search/v1/revgeocode?at=%.6f,%.6f&types=street&lang=vi-VN%s",
+            HereApi.PROXY, lat, lon, if (nav) "&showNavAttributes=speedLimits" else "")
 
     private fun get(u: String): Pair<Int, String> {
-        val c = URL(u).openConnection() as HttpURLConnection
+        val c = HereApi.open(u)
         try {
             c.connectTimeout = 5000
             c.readTimeout = 5000

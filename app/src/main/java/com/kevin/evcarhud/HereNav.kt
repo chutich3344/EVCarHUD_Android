@@ -32,7 +32,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-// Chỉ đường bằng HERE (cùng API key với tên đường, nhập trong Cài đặt):
+// Chỉ đường bằng HERE (qua máy chủ riêng giữ key, xem HereApi):
 //  - Tìm điểm đến: Autosuggest, trả luôn toạ độ (1 lượt gọi cho mỗi lần tìm)
 //  - Tính đường: Routing v8, đường đi dạng Flexible Polyline, hướng rẽ (turnByTurnActions),
 //    kèm tên đường + giới hạn tốc độ của từng đoạn trên cả tuyến (spans) -> suốt chuyến không cần tra tên đường / tốc độ nữa
@@ -50,7 +50,6 @@ class HereNav(private val gps: LocationFallback) {
                         val totalM: Double, val totalS: Double,
                         val spanAt: IntArray, val spanName: Array<String>, val spanKmh: IntArray)
 
-    @Volatile var apiKey = ""
     @Volatile var vehicle = "car"            // car / scooter (xe máy)
     @Volatile var showMini = true
     @Volatile var active = false
@@ -95,14 +94,12 @@ class HereNav(private val gps: LocationFallback) {
 
     // ---------- Tìm điểm đến (gọi ngoài luồng UI) ----------
     fun search(text: String): List<Place> {
-        val key = apiKey.trim()
-        if (key.isEmpty()) { note = "Chưa có API key HERE"; return emptyList() }
         if (text.isBlank()) return emptyList()
         // Autosuggest bắt buộc có vị trí tham chiếu: chưa có GPS thì lấy giữa Việt Nam
         val p = gps.anyLatLon() ?: (16.0 to 106.0)
         try {
-            val u = String.format(Locale.US, "%s?at=%.6f,%.6f&q=%s&lang=vi-VN&in=countryCode:VNM&limit=8&apiKey=%s",
-                SUGGEST, p.first, p.second, enc(text.trim()), enc(key))
+            val u = String.format(Locale.US, "%s?at=%.6f,%.6f&q=%s&lang=vi-VN&in=countryCode:VNM&limit=8",
+                SUGGEST, p.first, p.second, enc(text.trim()))
             val (code, body) = get(u)
             if (code != 200) { note = "Tìm điểm đến: ${httpNote(code)}"; return emptyList() }
             val arr = JSONObject(body).optJSONArray("items") ?: JSONArray()
@@ -138,13 +135,11 @@ class HereNav(private val gps: LocationFallback) {
 
     fun previewRoutes(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): List<RouteOpt> {
         opts = emptyList()
-        val key = apiKey.trim()
-        if (key.isEmpty()) { note = "Chưa có API key HERE"; return emptyList() }
         for (withSpans in listOf(true, false)) {
             try {
                 val u = String.format(Locale.US,
-                    "%s?transportMode=%s&origin=%.6f,%.6f&destination=%.6f,%.6f&alternatives=2&return=polyline,summary,turnByTurnActions%s&lang=vi-VN&apiKey=%s",
-                    ROUTE, vehicle, fromLat, fromLon, toLat, toLon, if (withSpans) "&spans=names,maxSpeed" else "", enc(key))
+                    "%s?transportMode=%s&origin=%.6f,%.6f&destination=%.6f,%.6f&alternatives=2&return=polyline,summary,turnByTurnActions%s&lang=vi-VN",
+                    ROUTE, vehicle, fromLat, fromLon, toLat, toLon, if (withSpans) "&spans=names,maxSpeed" else "")
                 val (code, body) = get(u)
                 if (code == 400 && withSpans) continue
                 if (code != 200) { note = "Tính đường: ${httpNote(code)}"; return emptyList() }
@@ -208,21 +203,19 @@ class HereNav(private val gps: LocationFallback) {
         if (busy) return
         busy = true
         lastReq = now
-        val key = apiKey.trim()
         val veh = vehicle
         exec.execute {
-            try { fetchRoute(key, p.first, p.second, veh) } finally { busy = false }
+            try { fetchRoute(p.first, p.second, veh) } finally { busy = false }
         }
     }
-    private fun fetchRoute(key: String, lat: Double, lon: Double, veh: String) {
-        if (key.isEmpty()) { note = "Chưa có API key HERE"; fails++; return }
+    private fun fetchRoute(lat: Double, lon: Double, veh: String) {
         var err = ""
         // Lần đầu xin cả tên đường + giới hạn tốc độ theo đoạn (spans); bị từ chối (HTTP 400) thì xin lại không có spans
         for (withSpans in listOf(true, false)) {
             try {
                 val u = String.format(Locale.US,
-                    "%s?transportMode=%s&origin=%.6f,%.6f&destination=%.6f,%.6f&return=polyline,summary,turnByTurnActions%s&lang=vi-VN&apiKey=%s",
-                    ROUTE, veh, lat, lon, destLat, destLon, if (withSpans) "&spans=names,maxSpeed" else "", enc(key))
+                    "%s?transportMode=%s&origin=%.6f,%.6f&destination=%.6f,%.6f&return=polyline,summary,turnByTurnActions%s&lang=vi-VN",
+                    ROUTE, veh, lat, lon, destLat, destLon, if (withSpans) "&spans=names,maxSpeed" else "")
                 val (code, body) = get(u)
                 if (code == 400 && withSpans) { err = httpNote(code); continue }
                 if (code != 200) { err = httpNote(code); break }
@@ -538,8 +531,7 @@ class HereNav(private val gps: LocationFallback) {
             val have = tiles[key]
             val now = SystemClock.elapsedRealtime()
             if (have != null && (style != 3 || now - (trafficAt[key] ?: 0L) < 300_000L)) return have
-            val k = apiKey.trim()
-            if (k.isEmpty() || key in tileWait || tileWait.size >= 24) return have
+            if (key in tileWait || tileWait.size >= 24) return have
             if (tileFails >= 3 && now - tileFailAt < 5_000L) return have
             if (now - (failAt[key] ?: -1_000_000L) < 60_000L) return have
             if (now - styleBadAt[style] < 600_000L) return have
@@ -556,12 +548,12 @@ class HereNav(private val gps: LocationFallback) {
                     // 2) tải từ HERE
                     if (bmp == null) {
                         val sz = if (style == 0) "" else "&size=512"
-                        val url = if (style == 3) String.format(Locale.US, "%s/%d/%d/%d/png?apiKey=%s%s", TRAFFIC_TILE, z, x, y, enc(k), sz)
+                        val url = if (style == 3) String.format(Locale.US, "%s/%d/%d/%d/png?size=512", TRAFFIC_TILE, z, x, y)
                         else {
                             val fmt = when (style) { 1 -> "png8?style=explore.night"; 2 -> "jpeg?style=satellite.day"; else -> "png8?style=lite.night" }
-                            String.format(Locale.US, "%s/%d/%d/%d/%s%s&apiKey=%s", TILE, z, x, y, fmt, sz, enc(k))
+                            String.format(Locale.US, "%s/%d/%d/%d/%s%s", TILE, z, x, y, fmt, sz)
                         }
-                        val c = URL(url).openConnection() as HttpURLConnection
+                        val c = HereApi.open(url)
                         // không gọi disconnect(): giữ kết nối để ô sau dùng lại, khỏi bắt tay TLS mỗi ô
                         c.connectTimeout = 6000
                         c.readTimeout = 8000
@@ -620,7 +612,6 @@ class HereNav(private val gps: LocationFallback) {
 
     // Vẽ các ô quanh vị trí xe trong hệ toạ độ đã quay (gốc tại xe, trục y hướng nam), s = px màn hình / mét
     private fun drawTiles(canvas: Canvas, s: Double, radiusPx: Float, rangeM: Double) {
-        if (apiKey.isBlank()) return
         val z = if (rangeM > 600.0) 15 else 16
         val world = 256.0 * (1 shl z)
         val latR = Math.toRadians(snapLat)
@@ -752,7 +743,7 @@ class HereNav(private val gps: LocationFallback) {
 
     // ---------- Tiện ích ----------
     private fun get(url: String): Pair<Int, String> {
-        val c = URL(url).openConnection() as HttpURLConnection
+        val c = HereApi.open(url)
         try {
             c.connectTimeout = 6000
             c.readTimeout = 8000
@@ -768,8 +759,8 @@ class HereNav(private val gps: LocationFallback) {
 
     private fun httpNote(code: Int) = when (code) {
         400 -> "yêu cầu không hợp lệ (HTTP 400)"
-        401, 403 -> "API key sai hoặc chưa mở dịch vụ này (HTTP $code)"
-        429 -> "hết lượt gọi (HTTP 429)"
+        401, 403 -> "máy chủ từ chối (HTTP $code)"
+        429 -> "gọi quá nhiều, thử lại sau (HTTP 429)"
         else -> "HERE lỗi HTTP $code"
     }
 
@@ -862,13 +853,13 @@ class HereNav(private val gps: LocationFallback) {
 
     companion object {
         private const val TAG = "HereNav"
-        private const val SUGGEST = "https://autosuggest.search.hereapi.com/v1/autosuggest"
-        private const val ROUTE = "https://router.hereapi.com/v8/routes"
-        private const val TILE = "https://maps.hereapi.com/v3/base/mc"
+        private const val SUGGEST = "${HereApi.PROXY}/autosuggest.search/v1/autosuggest"
+        private const val ROUTE = "${HereApi.PROXY}/router/v8/routes"
+        private const val TILE = "${HereApi.PROXY}/maps/v3/base/mc"
         private const val TILE_MAX = 160
         private const val DISK_DAYS = 30L
         private const val DISK_MAX = 200L * 1024 * 1024
-        private const val TRAFFIC_TILE = "https://traffic.maps.hereapi.com/v3/flow/mc"
+        private const val TRAFFIC_TILE = "${HereApi.PROXY}/traffic.maps/v3/flow/mc"
         private const val FLEX = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
         const val UPDATE_MS = 300L
         const val OFF_M = 45.0

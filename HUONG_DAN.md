@@ -237,3 +237,17 @@ File: `UvcSource.kt` (mới), `MainActivity.kt`, `app/build.gradle.kts` (thêm t
 - Tải APK trên điện thoại: https://github.com/chutich3344/EVCarHUD_Android/releases/download/apk/EVCarHUD.apk (GitHub tự build mỗi lần có code mới).
 - APK không kèm model. Lần đầu mở app tự tải model (~770 MB) từ Release "models", hiện % trên màn hình; mất mạng thì tự tải tiếp, tắt app mở lại vẫn giữ phần đã tải. Nên dùng Wi-Fi. Sau đó app nạp model lên NPU lần đầu (vài phút), các lần sau mở nhanh.
 - Build ở máy nhà vẫn có thể để model trong `app\src\main\assets\`: có trong assets thì app dùng luôn, không tải.
+
+## Máy chủ giữ key HERE (Cloudflare Worker, 22/10)
+
+App không còn ô nhập API key HERE. Mọi lượt gọi HERE (tên đường, tìm điểm đến, tính đường, ô bản đồ, vệ tinh, giao thông) đi qua máy chủ `https://evcarhud-api.evcarhud.workers.dev` (thư mục `worker/`). Máy chủ giữ key, gắn key vào rồi gọi HERE, và giới hạn mỗi máy 60 lượt tra / phút, 600 ô bản đồ / phút (thêm 1500 / phút cho mỗi IP). Mỗi máy có một mã cài đặt ngẫu nhiên (`installId`), không chứa thông tin cá nhân.
+
+Cài đặt một lần:
+1. Cloudflare (dash.cloudflare.com) › **Workers & Pages**: lần đầu vào sẽ hỏi tên miền phụ `*.workers.dev`, đặt là `evcarhud`. Nếu tên này đã có người dùng thì đặt tên khác và báo lại để sửa `HereApi.PROXY`.
+2. Lấy **Account ID**: cột phải trang Workers & Pages (hoặc trang tổng quan tài khoản).
+3. Tạo **API token**: góc phải trên › My Profile › API Tokens › Create Token › mẫu **Edit Cloudflare Workers** › Continue › Create. Chép token (chỉ hiện một lần).
+4. GitHub repo › Settings › Secrets and variables › Actions › New repository secret, tạo 3 cái: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `HERE_KEY` (key HERE của bạn).
+5. GitHub › Actions › **Deploy Worker** › mở lần chạy gần nhất › **Re-run all jobs** (hoặc Run workflow). Xong thì mở `https://evcarhud-api.evcarhud.workers.dev` trên trình duyệt, thấy chữ `EVCarHUD ok` là chạy.
+6. Cài APK thử: https://github.com/chutich3344/EVCarHUD_Android/releases/download/apk-worker/EVCarHUD.apk
+
+Đổi key HERE sau này: sửa secret `HERE_KEY` trong GitHub rồi chạy lại Deploy Worker, không cần ra APK mới. Chi phí Cloudflare: miễn phí tới 100.000 lượt / ngày, quá thì gói 5 USD / tháng. Đặt hạn mức chi tiêu trong tài khoản HERE để không bị vượt tiền.

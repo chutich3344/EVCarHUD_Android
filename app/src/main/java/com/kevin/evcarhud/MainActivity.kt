@@ -236,8 +236,6 @@ class Runner(private val ctx: Context) {
     // Ảnh quanh mỗi lần cảnh báo (xem lại, đánh dấu đúng / nhầm) + thu ảnh huấn luyện
     val clips = AlertClips(ctx)
     var collectData by mutableStateOf(prefs.getBoolean("collect", false))
-    // API key HERE (tên đường, giới hạn tốc độ, chỉ đường), nhập trong Cài đặt. Chỉ để test: bản thương mại gọi qua máy chủ riêng giữ key
-    var hereKey by mutableStateOf(prefs.getString("hereKey", "") ?: "")
     // Chiều cao camera (m) cho đo khoảng cách theo hộp
     var camH by mutableStateOf(prefs.getFloat("camH", 1.22f))
     // Chế độ phản chiếu kính lái: nền đen, lật gương
@@ -285,13 +283,11 @@ class Runner(private val ctx: Context) {
         prefs.edit().putFloat("hoodCut", hoodCut).putInt("camKind", camKind.ordinal).putString("streamUrl", streamUrl)
             .putBoolean("alertLog", logOn).putBoolean("limitGuess", limitGuess)
             .putInt("roadMode", roadMode).putBoolean("autoCal", autoCal).putFloat("horizon", horizon)
-            .putInt("alertSound", alertSound).putBoolean("collect", collectData).putString("hereKey", hereKey.trim())
+            .putInt("alertSound", alertSound).putBoolean("collect", collectData)
             .putFloat("camH", camH).putBoolean("reflect", reflect)
             .putInt("navVehicle", navVehicle).putBoolean("miniMap", miniMap)
             .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview)
             .putBoolean("dimStill", dimStill).apply()
-        here.apiKey = hereKey
-        nav.apiKey = hereKey
         nav.vehicle = if (navVehicle == 1) "scooter" else "car"
         nav.showMini = miniMap
         HudRenderer.camH = camH
@@ -310,8 +306,9 @@ class Runner(private val ctx: Context) {
     var miniMap by mutableStateOf(prefs.getBoolean("miniMap", true))
 
     init {
-        here.apiKey = hereKey
-        nav.apiKey = hereKey
+        // Mã cài đặt ngẫu nhiên: máy chủ HERE giới hạn lượt gọi theo mã này (không chứa thông tin cá nhân)
+        HereApi.device = prefs.getString("installId", null)
+            ?: java.util.UUID.randomUUID().toString().also { prefs.edit().putString("installId", it).apply() }
         nav.vehicle = if (navVehicle == 1) "scooter" else "car"
         nav.showMini = miniMap
         HudRenderer.camH = camH
@@ -1384,15 +1381,7 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
         SectionTitle("Bản đồ HERE")
         SettingsCard {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
-                RowTitle("API key")
-                OutlinedTextField(
-                    value = runner.hereKey,
-                    onValueChange = { runner.hereKey = it.trim(); runner.savePrefs() },
-                    singleLine = true,
-                    textStyle = TextStyle(color = Color.White, fontSize = 15.sp),
-                    label = { Text("Dán API key của HERE (chỉ để test)", fontSize = 13.sp) },
-                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
-                )
+                RowTitle("Tên đường & giới hạn tốc độ")
                 Desc("Tên đường, giới hạn tốc độ và chỉ đường. Chỉ tra khi xe chạy trên 10 km/h và đi thêm ~150 m (400 m trên cao tốc) hoặc vừa rẽ; " +
                     "đang chỉ đường thì dùng dữ liệu cả tuyến, không tra thêm. Biển camera đọc được luôn được ưu tiên. " +
                     "Giới hạn: ${runner.limitSource()}. ${runner.here.note}", top = 6)
@@ -1563,7 +1552,6 @@ private fun BoxScope.NavPanel(runner: Runner, land: Boolean, onClose: () -> Unit
             Text("‹", color = Color.White, fontSize = 30.sp, modifier = Modifier.clickable { onClose() }.padding(end = 12.dp))
             Text("Chỉ đường", color = Color.White, fontSize = 26.sp)
         }
-        if (runner.hereKey.isBlank()) Desc("Chưa có API key HERE: dán key trong Cài đặt › Bản đồ HERE.", top = 0)
         if (tick >= 0 && nav.active) {
             Column(Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(16.dp)).background(CardBg).padding(14.dp)) {
                 Text((if (nav.simulating) "Chạy thử tới " else "Đang dẫn đường tới ") + nav.destName, color = Color.White, fontSize = 17.sp)

@@ -5,7 +5,7 @@ name: Build APK
 
 on:
   push:
-    branches: [main, claude/hud-layout]
+    branches: [main, claude/hud-layout, claude/project-thread-uxds1h]
   workflow_dispatch:
 
 permissions:
@@ -37,9 +37,12 @@ jobs:
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk EVCarHUD.apk
           NOTE="Bản build từ nhánh ${GITHUB_REF_NAME}, commit ${GITHUB_SHA::7}, lúc $(TZ=Asia/Ho_Chi_Minh date '+%H:%M %d/%m/%Y')"
-          if gh release view apk --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit apk --repo "$GITHUB_REPOSITORY" --notes "$NOTE"
+          # Bản gọi HERE qua Worker đăng riêng ở Release "apk-worker" cho tới khi Worker chạy ổn
+          TAG=apk; TITLE="APK mới nhất"
+          if [ "$GITHUB_REF_NAME" = "claude/project-thread-uxds1h" ]; then TAG=apk-worker; TITLE="APK thử máy chủ Worker"; fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "$NOTE"
           else
-            gh release create apk --repo "$GITHUB_REPOSITORY" --title "APK mới nhất" --notes "$NOTE" --prerelease
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --notes "$NOTE" --prerelease
           fi
-          gh release upload apk EVCarHUD.apk --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$TAG" EVCarHUD.apk --repo "$GITHUB_REPOSITORY" --clobber

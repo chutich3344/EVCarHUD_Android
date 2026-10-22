@@ -1,0 +1,27 @@
+# Máy chủ giữ key HERE cho app EVCarHUD (Cloudflare Worker).
+# Tự triển khai bằng GitHub Actions (.github/workflows/deploy-worker.yml) mỗi khi sửa thư mục worker/.
+# Key HERE KHÔNG để ở đây: nạp thành secret HERE_KEY (GitHub secret HERE_KEY -> Worker secret).
+name = "evcarhud-api"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[vars]
+# Trùng APP_TOKEN trong app (HereApi.kt). Không phải bí mật thật: chỉ chặn người lạ gọi thẳng vào Worker
+APP_TOKEN = "NMuIzilyzSUd-3jRFiDmIjhp"
+
+# Giới hạn theo từng máy (mã cài đặt) mỗi 60 s. Vượt -> HTTP 429, app tự chờ rồi gọi lại
+[[ratelimits]]
+name = "API_RL"          # tên đường, tìm điểm đến, tính đường
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
+
+[[ratelimits]]
+name = "TILE_RL"         # ô bản đồ, vệ tinh, giao thông
+namespace_id = "1002"
+simple = { limit = 600, period = 60 }
+
+[[ratelimits]]
+name = "IP_RL"           # chặn thêm theo địa chỉ IP (người cố đổi mã cài đặt liên tục)
+namespace_id = "1003"
+simple = { limit = 1500, period = 60 }

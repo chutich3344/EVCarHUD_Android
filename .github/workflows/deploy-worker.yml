@@ -1,0 +1,27 @@
+# Đưa máy chủ HERE (thư mục worker/) lên Cloudflare mỗi khi sửa worker/, hoặc bấm "Run workflow".
+# Cần 3 secret trong GitHub (Settings › Secrets and variables › Actions):
+#   CLOUDFLARE_API_TOKEN  (mẫu "Edit Cloudflare Workers"), CLOUDFLARE_ACCOUNT_ID, HERE_KEY
+name: Deploy Worker
+
+on:
+  push:
+    branches: [main, claude/hud-layout, claude/project-thread-uxds1h]
+    paths: ["worker/**", ".github/workflows/deploy-worker.yml"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          wranglerVersion: "4"
+          secrets: |
+            HERE_KEY
+        env:
+          HERE_KEY: ${{ secrets.HERE_KEY }}

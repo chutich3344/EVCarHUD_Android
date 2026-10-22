@@ -446,10 +446,6 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
             }
         }
 
-        if (nav.apiKey.isBlank()) {
-            Text("Chưa có key HERE: nhập trong Cài đặt để hiện bản đồ", color = Color(0xFFFFC107), fontSize = 13.sp,
-                modifier = Modifier.align(Alignment.Center).background(Color(0xCC000000), RoundedCornerShape(10.dp)).padding(10.dp))
-        }
         if (nav.tileNote.isNotEmpty() && !navOn) {
             Text(nav.tileNote, color = Color(0xFFFFC107), fontSize = 12.sp,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp).background(Color(0xCC000000), RoundedCornerShape(10.dp)).padding(8.dp))
