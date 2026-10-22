@@ -325,9 +325,11 @@ class HereNav(private val gps: LocationFallback) {
         val p = gps.lastLatLon()
         val r = route
         if (r == null) {
-            if (p == null) note = "Chờ tín hiệu GPS để tính đường…"
+            // Tính đường chỉ cần điểm đi gần đúng: chưa có GPS (trong nhà) thì lấy vị trí theo mạng
+            val p0 = p ?: gps.anyLatLon()
+            if (p0 == null) note = "Chờ tín hiệu GPS để tính đường…"
             else if (fails >= MAX_FAILS) { active = false; turn = null }
-            else if (!busy && now - lastReq > RETRY_MS) requestRoute(now, p)
+            else if (!busy && now - lastReq > RETRY_MS) requestRoute(now, p0)
             return
         }
         if (p == null) return
