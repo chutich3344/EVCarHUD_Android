@@ -1090,7 +1090,12 @@ class Runner(private val ctx: Context) {
     // Chép nhật ký + ảnh vào Download/EVCarHUD (luồng riêng: ảnh huấn luyện có thể nhiều)
     fun saveAllToDownloads() {
         status = "Đang lưu vào Download/EVCarHUD..."
-        Thread { status = DownloadExport.saveAll(ctx) }.start()
+        android.widget.Toast.makeText(ctx, status, android.widget.Toast.LENGTH_SHORT).show()
+        Thread {
+            val msg = DownloadExport.saveAll(ctx)
+            status = msg
+            Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show() }
+        }.start()
     }
 }
 
