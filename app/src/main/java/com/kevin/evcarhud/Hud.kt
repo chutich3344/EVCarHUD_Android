@@ -239,6 +239,116 @@ object HudRenderer {
         else -> 0xFFC6FF00.toInt() // xe đạp
     }
 
+    // ---- Làn vàng AR khi sắp rẽ (giống trang giả lập ar_lane) ----
+    private const val AR_RANGE_M = 150
+    private val arFill = fillP(0xFFFFC107)
+    private val arEdge = stroke(0xE6FFD54F)
+    private val arChev = fillP(0xF2FFFFFF)
+
+    // Tuyến trên mặt đường (lat: ngang, phải dương; fwd: phía trước, m): thẳng tới chỗ rẽ rồi cong. null = không vẽ (đi thẳng, vòng xuyến, tới nơi)
+    private fun arLanePath(code: Int, dist: Float): List<FloatArray>? {
+        val p = ArrayList<FloatArray>()
+        val z0 = 3.2f
+        val zt = max(z0 + 1f, dist)
+        var z = z0
+        while (z < zt) { p.add(floatArrayOf(0f, z)); z += 0.5f }
+        fun arc(r: Float, deg: Float, side: Float) {
+            val a = Math.toRadians(deg.toDouble()).toFloat()
+            for (i in 0..40) {
+                val t = a * i / 40f
+                p.add(floatArrayOf(side * (r - r * cos(t)), zt + r * sin(t)))
+            }
+            val ex = side * (r - r * cos(a)); val ez = zt + r * sin(a)
+            val dx = side * sin(a); val dz = cos(a)
+            for (s in 1..40) p.add(floatArrayOf(ex + dx * s, ez + dz * s))
+        }
+        when (code) {
+            3 -> arc(7f, 90f, 1f)
+            2 -> arc(13f, 90f, -1f)
+            5, 14, 16 -> arc(25f, 32f, 1f)
+            4, 13, 15 -> arc(25f, 32f, -1f)
+            7 -> arc(6f, 135f, 1f)
+            6 -> arc(10f, 135f, -1f)
+            8 -> {                       // quay đầu (bên trái)
+                val r = 4.5f
+                for (i in 0..50) {
+                    val t = (Math.PI * i / 50).toFloat()
+                    p.add(floatArrayOf(-(r - r * cos(t)), zt + r * sin(t)))
+                }
+                var s = 1
+                while (s <= 25 && zt - s >= max(4f, zt - 14f)) { p.add(floatArrayOf(-2f * r, zt - s)); s++ }
+            }
+            else -> return null
+        }
+        val q = ArrayList<FloatArray>()
+        for (a in p) { if (a[1] < 3.2f && q.size > 5) break; q.add(a) }
+        return q
+    }
+
+    private fun drawArLane(canvas: Canvas, cam: Cam, p: List<FloatArray>, dist: Float, animSec: Float, k: Float) {
+        val h = camH
+        fun pr(lat: Float, fwd: Float) = proj(cam, fwd, lat, h)
+        // Mép trái / phải của dải rộng 3,2 m
+        val wd = 1.6f
+        val l = ArrayList<PointF>(); val r = ArrayList<PointF>()
+        for (i in p.indices) {
+            val a = p[max(0, i - 1)]; val b = p[min(p.size - 1, i + 1)]
+            var dx = b[0] - a[0]; var dz = b[1] - a[1]
+            val n = kotlin.math.hypot(dx, dz).takeIf { it > 0f } ?: 1f
+            dx /= n; dz /= n
+            val pl = pr(p[i][0] - dz * wd, p[i][1] + dx * wd)
+            val pq = pr(p[i][0] + dz * wd, p[i][1] - dx * wd)
+            if (pl == null || pq == null) { if (l.size > 1) break else { l.clear(); r.clear(); continue } }
+            l.add(pl); r.add(pq)
+        }
+        if (l.size < 2) return
+        var top = Float.MAX_VALUE; var bot = 0f
+        for (q in l) { top = min(top, q.y); bot = max(bot, q.y) }
+        for (q in r) { top = min(top, q.y); bot = max(bot, q.y) }
+        if (bot - top < 1f) bot = top + 1f
+        arFill.shader = LinearGradient(0f, bot, 0f, top,
+            intArrayOf(0x9EFFC107.toInt(), 0x61FFC107, 0x26FFC107), floatArrayOf(0f, 0.7f, 1f), Shader.TileMode.CLAMP)
+        polygon(canvas, l, r, arFill)
+        arEdge.strokeWidth = 2.5f * k
+        canvas.drawPath(pathOf(l), arEdge)
+        canvas.drawPath(pathOf(r), arEdge)
+
+        // Mũi tên (chevron) trắng trên mặt đường, chạy dọc tuyến 9 m/s, cách nhau 6 m
+        val cum = FloatArray(p.size)
+        for (i in 1 until p.size) cum[i] = cum[i - 1] + kotlin.math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1])
+        val tot = cum[p.size - 1]
+        val sp = 6f
+        var s = (animSec * 9f) % sp
+        var i = 1
+        val chev = Path()
+        while (s < min(tot, dist + 40f)) {
+            while (i < p.size - 1 && cum[i] < s) i++
+            val a = p[i - 1]; val b = p[i]
+            val seg = (cum[i] - cum[i - 1]).takeIf { it > 0f } ?: 1f
+            val f = (s - cum[i - 1]) / seg
+            val x = a[0] + (b[0] - a[0]) * f; val z = a[1] + (b[1] - a[1]) * f
+            val dx = (b[0] - a[0]) / seg; val dz = (b[1] - a[1]) / seg
+            s += sp
+            if (z < 3.3f) continue
+            val nx = dz; val nz = -dx
+            val len = 1.3f; val w = 0.85f; val th = 0.5f
+            val tip = floatArrayOf(x + dx * len, z + dz * len)
+            val cl = floatArrayOf(x - dx * 0.2f + nx * w, z - dz * 0.2f + nz * w)
+            val cr = floatArrayOf(x - dx * 0.2f - nx * w, z - dz * 0.2f - nz * w)
+            val pts = listOf(cl, tip, cr,
+                floatArrayOf(cr[0] + dx * th, cr[1] + dz * th),
+                floatArrayOf(tip[0] - dx * th, tip[1] - dz * th),
+                floatArrayOf(cl[0] + dx * th, cl[1] + dz * th)).map { pr(it[0], it[1]) }
+            if (pts.any { it == null }) continue
+            chev.reset()
+            pts.forEachIndexed { j, q -> if (j == 0) chev.moveTo(q!!.x, q.y) else chev.lineTo(q!!.x, q.y) }
+            chev.close()
+            val fade = ((dist + 30f - z) / 30f).coerceIn(0f, 1f)
+            arChev.alpha = (242 * fade).toInt()
+            canvas.drawPath(chev, arChev)
+        }
+    }
+
     private fun polygon(canvas: Canvas, a: List<PointF>, b: List<PointF>, paint: Paint) {
         if (a.size < 2) return
         val p = Path()
@@ -730,7 +840,10 @@ object HudRenderer {
             val c = proj(cam, x, o[b + 1] + 0.9f, z)
             if (a != null && c != null) { pl.add(a); pr.add(c) }
         }
-        if (show) polygon(canvas, pl, pr, pathFill)
+        // Sắp rẽ (≤150 m): làn vàng AR + mũi tên chạy theo hướng rẽ thay cho dải xanh; đi thẳng giữ dải xanh
+        val arPath = if (show && turn != null && turn.distanceM in 0..AR_RANGE_M) arLanePath(turn.turn, turn.distanceM.toFloat()) else null
+        if (arPath != null) drawArLane(canvas, cam, arPath, turn!!.distanceM.toFloat(), animSec, k)
+        else if (show) polygon(canvas, pl, pr, pathFill)
 
         // Mép đường (trắng)
         edgeLine.strokeWidth = 3f * k
