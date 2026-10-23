@@ -9,8 +9,9 @@ const HOSTS = {
   "router": "router.hereapi.com",                         // tính đường
   "maps": "maps.hereapi.com",                             // ô bản đồ / vệ tinh
   "traffic.maps": "traffic.maps.hereapi.com",             // lớp giao thông
+  "vector": "vector.hereapi.com",                         // ô bản đồ vector (trang Bản đồ 3D)
 };
-const TILES = new Set(["maps", "traffic.maps"]);
+const TILES = new Set(["maps", "traffic.maps", "vector"]);
 
 function text(status, msg) {
   return new Response(msg + "\n", { status, headers: { "content-type": "text/plain; charset=utf-8" } });

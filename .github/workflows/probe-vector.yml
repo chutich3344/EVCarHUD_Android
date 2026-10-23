@@ -1,0 +1,43 @@
+# Đọc thử một ô bản đồ vector HERE qua Worker và in các lớp / thuộc tính (để viết kiểu bản đồ cho đúng). Tốn 2 lượt gọi.
+name: Probe vector tile
+
+on:
+  push:
+    branches: [claude/project-thread-uxds1h]
+    paths: [".github/workflows/probe-vector.yml"]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pip install mapbox-vector-tile==2.1.0
+      - name: Fetch and decode
+        run: |
+          sleep 60   # chờ Worker mới lên
+          for t in 15/26085/15347 13/6521/3836; do
+            curl -sS -H "X-App: NMuIzilyzSUd-3jRFiDmIjhp" -H "X-Device: ci-probe" -o tile.bin -w "HTTP %{http_code} %{size_download} B %{content_type}\n" \
+              "https://evcarhud-api.evcar-vf7.workers.dev/vector/v2/vectortiles/base/mc/$t/omv"
+            python - <<'PY'
+          import mapbox_vector_tile, collections
+          d = open("tile.bin", "rb").read()
+          try:
+              t = mapbox_vector_tile.decode(d)
+          except Exception as e:
+              print("decode error", e, d[:300]); raise SystemExit
+          for name, layer in t.items():
+              feats = layer["features"]
+              keys = collections.Counter()
+              kinds = collections.Counter()
+              geo = collections.Counter()
+              for f in feats:
+                  keys.update(f["properties"].keys())
+                  kinds[str(f["properties"].get("kind"))] += 1
+                  geo[f["geometry"]["type"]] += 1
+              print(f"== {name}: {len(feats)} features, extent {layer.get('extent')}, geom {dict(geo)}")
+              print("   keys:", dict(keys.most_common(40)))
+              print("   kinds:", dict(kinds.most_common(25)))
+              for f in feats[:2]:
+                  print("   sample:", {k: v for k, v in f["properties"].items()})
+          PY
+          done
