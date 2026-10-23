@@ -120,6 +120,13 @@ class LocationFallback(ctx: Context) : LocationListener {
         return Pair(l.latitude, l.longitude)
     }
 
+    // Hướng đi theo GPS (độ, từ bắc theo chiều kim đồng hồ); null khi đứng yên / chưa có
+    fun bearingDeg(): Float? {
+        val l = loc ?: return null
+        if (mocking || !l.hasBearing() || !l.hasSpeed() || l.speed < 1.5f) return null
+        return l.bearing
+    }
+
     // Cho bản đồ / thời tiết / gợi ý tìm kiếm: GPS nếu có, không thì vị trí gần đúng theo mạng
     // hoặc vị trí máy nhớ lần cuối (trong 1 ngày)
     fun anyLatLon(): Pair<Double, Double>? {

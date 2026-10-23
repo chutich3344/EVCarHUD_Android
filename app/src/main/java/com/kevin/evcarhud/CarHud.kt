@@ -55,6 +55,7 @@ import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.tan
 
 // Màn hình EVCarHUD trên Android Auto (ô CarPlay/Android Auto của xe): app dẫn đường tự vẽ toàn bộ vùng bản đồ.
@@ -171,22 +172,168 @@ class HudScreen(ctx: CarContext) : Screen(ctx) {
         surf.onMediaTap = { invalidate() }
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) { surf.start() }
+            override fun onResume(owner: LifecycleOwner) { invalidate() }   // quay về từ màn tìm / chọn tuyến: đổi nút Hủy
             override fun onStop(owner: LifecycleOwner) { surf.stop() }
             override fun onDestroy(owner: LifecycleOwner) { surf.quit(); autoStop() }
         })
     }
 
-    private fun icon(res: Int) = CarIcon.Builder(IconCompat.createWithResource(carContext, res)).build()
-
     override fun onGetTemplate(): Template {
         val ctx = carContext
+        val nav = CarLink.nav
         val strip = ActionStrip.Builder()
-            .addAction(Action.Builder().setIcon(icon(R.drawable.car_prev)).setOnClickListener { MediaNow.prev(ctx) }.build())
-            .addAction(Action.Builder().setIcon(icon(if (MediaNow.playing(ctx)) R.drawable.car_pause else R.drawable.car_play))
-                .setOnClickListener { MediaNow.toggle(ctx); invalidate() }.build())
-            .addAction(Action.Builder().setIcon(icon(R.drawable.car_next)).setOnClickListener { MediaNow.next(ctx) }.build())
+            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_search)).setOnClickListener { screenManager.push(SearchScreen(ctx)) }.build())
+            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_bolt)).setOnClickListener { screenManager.push(ChargerScreen(ctx)) }.build())
+            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_traffic))
+                .setOnClickListener { MapCtl.traffic = !MapCtl.traffic; CarToast.show(ctx, if (MapCtl.traffic) "Bật lớp giao thông" else "Tắt lớp giao thông") }.build())
+            .apply {
+                if (nav?.active == true) addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_close))
+                    .setOnClickListener { nav.stop(); invalidate() }.build())
+                else addAction(Action.Builder().setIcon(carIcon(ctx, if (MediaNow.playing(ctx)) R.drawable.car_pause else R.drawable.car_play))
+                    .setOnClickListener { MediaNow.toggle(ctx); invalidate() }.build())
+            }
             .build()
-        return NavigationTemplate.Builder().setActionStrip(strip).build()
+        val mapStrip = ActionStrip.Builder()
+            .addAction(Action.PAN)
+            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_plus)).setOnClickListener { MapCtl.zoomBy(1) }.build())
+            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_minus)).setOnClickListener { MapCtl.zoomBy(-1) }.build())
+            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_locate)).setOnClickListener { MapCtl.recenter() }.build())
+            .build()
+        return NavigationTemplate.Builder().setActionStrip(strip).setMapActionStrip(mapStrip).build()
+    }
+}
+
+private fun carIcon(ctx: CarContext, res: Int) = CarIcon.Builder(IconCompat.createWithResource(ctx, res)).build()
+
+private object CarToast {
+    fun show(ctx: CarContext, t: String) { try { androidx.car.app.CarToast.makeText(ctx, t, androidx.car.app.CarToast.LENGTH_SHORT).show() } catch (_: Throwable) {} }
+}
+
+private val carExec: java.util.concurrent.ExecutorService = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+private fun kmText(km: Double) = if (km < 1.0) "${(km * 1000).roundToInt()} m" else String.format(Locale.US, "%.1f km", km)
+
+// Trạng thái bản đồ trên xe: zoom, kéo, xoay theo hướng xe, lớp giao thông, các phương án tuyến đang xem trước
+object MapCtl {
+    @Volatile var zoom = 16
+    @Volatile var follow = true             // bám theo xe, xoay theo hướng đi
+    @Volatile var cx = Double.NaN           // tâm khi đang kéo (toạ độ ô ở zoom hiện tại)
+    @Volatile var cy = Double.NaN
+    @Volatile var traffic = false
+    @Volatile var preview: List<HereNav.RouteOpt> = emptyList()
+    @Volatile var sel = 0
+    fun zoomBy(d: Int) {
+        val nz = (zoom + d).coerceIn(10, 18)
+        if (!cx.isNaN()) { val f = Math.pow(2.0, (nz - zoom).toDouble()); cx *= f; cy *= f }
+        zoom = nz
+    }
+    fun recenter() { follow = true; cx = Double.NaN; cy = Double.NaN }
+}
+
+// Tìm điểm đến: gõ (khi xe dừng) hoặc nói; mỗi lần tìm là 1 lượt HERE Autosuggest
+class SearchScreen(ctx: CarContext) : Screen(ctx) {
+    private var items: List<HereNav.Place> = emptyList()
+    private var loading = false
+    private var lastQ = ""
+    private val main = Handler(android.os.Looper.getMainLooper())
+    private val debounce = Runnable { run(lastQ) }
+
+    private fun run(q: String) {
+        val nav = CarLink.nav ?: return
+        if (q.isBlank()) return
+        loading = true; invalidate()
+        carExec.execute {
+            val r = nav.search(q)
+            main.post { if (q == lastQ) { items = r; loading = false; invalidate() } }
+        }
+    }
+
+    override fun onGetTemplate(): Template {
+        val cb = object : androidx.car.app.model.SearchTemplate.SearchCallback {
+            override fun onSearchTextChanged(searchText: String) {
+                lastQ = searchText; main.removeCallbacks(debounce)
+                if (searchText.trim().length >= 3) main.postDelayed(debounce, 700L)
+            }
+            override fun onSearchSubmitted(searchText: String) { lastQ = searchText; main.removeCallbacks(debounce); run(searchText) }
+        }
+        val b = androidx.car.app.model.SearchTemplate.Builder(cb)
+            .setHeaderAction(Action.BACK).setSearchHint("Tìm điểm đến").setShowKeyboardByDefault(true).setInitialSearchText(lastQ)
+        if (loading) return b.setLoading(true).build()
+        val list = androidx.car.app.model.ItemList.Builder()
+        if (items.isEmpty()) list.setNoItemsMessage(if (lastQ.isBlank()) "Nói hoặc gõ tên điểm đến" else (CarLink.nav?.note?.ifBlank { null } ?: "Không có kết quả"))
+        for (p in items.take(6)) {
+            val row = androidx.car.app.model.Row.Builder().setTitle(p.name.ifBlank { p.address })
+            val sub = listOfNotNull(p.distKm.takeIf { !it.isNaN() }?.let { kmText(it) }, p.address.ifBlank { null }).joinToString(" · ")
+            if (sub.isNotEmpty()) row.addText(sub)
+            row.setOnClickListener {
+                val c = CarLink.nav?.place(p.refId) ?: return@setOnClickListener
+                screenManager.push(RouteScreen(carContext, c.first, c.second, p.name.ifBlank { p.address }))
+            }
+            list.addItem(row.build())
+        }
+        return b.setItemList(list.build()).build()
+    }
+}
+
+// Trạm sạc VinFast gần nhất (dữ liệu trong app, không tốn lượt HERE); chọn trạm thì xem tuyến tới đó
+class ChargerScreen(ctx: CarContext) : Screen(ctx) {
+    override fun onGetTemplate(): Template {
+        val here = CarLink.gps?.anyLatLon()
+        val list = androidx.car.app.model.ItemList.Builder()
+        if (here == null) list.setNoItemsMessage("Đang chờ vị trí GPS…")
+        else {
+            val near = Chargers.load(carContext).map { it to Chargers.distKm(here.first, here.second, it.lat, it.lon) }
+                .sortedBy { it.second }.take(10)
+            if (near.isEmpty()) list.setNoItemsMessage("Chưa có dữ liệu trạm sạc")
+            for ((st, d) in near) {
+                list.addItem(androidx.car.app.model.Row.Builder().setTitle(st.name)
+                    .addText("${kmText(d)} · ${st.maxKw} kW" + if (st.ports.isNotBlank()) " · ${st.ports}" else "")
+                    .setOnClickListener { screenManager.push(RouteScreen(carContext, st.lat, st.lon, st.name)) }.build())
+            }
+        }
+        return androidx.car.app.model.ListTemplate.Builder().setTitle("Trạm sạc gần nhất").setHeaderAction(Action.BACK)
+            .setSingleList(list.build()).build()
+    }
+}
+
+// Xem 2-3 tuyến HERE tới điểm đã chọn (1 lượt gọi), bản đồ bên trái vẽ các tuyến, bấm "Đi" để dẫn đường
+class RouteScreen(ctx: CarContext, private val lat: Double, private val lon: Double, private val name: String) : Screen(ctx) {
+    private var opts: List<HereNav.RouteOpt>? = null
+    private val main = Handler(android.os.Looper.getMainLooper())
+
+    init {
+        MapCtl.sel = 0
+        val nav = CarLink.nav; val from = CarLink.gps?.anyLatLon()
+        if (nav != null && from != null) carExec.execute {
+            val r = nav.previewRoutes(from.first, from.second, lat, lon)
+            main.post { opts = r; MapCtl.preview = r; invalidate() }
+        } else opts = emptyList()
+        lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onDestroy(owner: LifecycleOwner) { MapCtl.preview = emptyList() }
+        })
+    }
+
+    override fun onGetTemplate(): Template {
+        val b = androidx.car.app.navigation.model.RoutePreviewNavigationTemplate.Builder()
+            .setTitle(name).setHeaderAction(Action.BACK)
+        val o = opts ?: return b.setLoading(true).build()
+        val list = androidx.car.app.model.ItemList.Builder()
+        if (o.isEmpty()) return androidx.car.app.model.MessageTemplate.Builder(CarLink.nav?.note?.ifBlank { null } ?: "Không tìm được đường")
+            .setTitle(name).setHeaderAction(Action.BACK).build()
+        for ((i, r) in o.withIndex()) {
+            val min = (r.totalS / 60).roundToInt()
+            val delay = (r.delayS / 60).roundToInt()
+            list.addItem(androidx.car.app.model.Row.Builder().setTitle("$min phút · ${kmText(r.totalM / 1000)}")
+                .addText(if (delay >= 2) "Kẹt xe thêm $delay phút" else if (i == 0) "Nhanh nhất" else "Tuyến khác").build())
+        }
+        list.setSelectedIndex(MapCtl.sel).setOnSelectedListener { MapCtl.sel = it }
+        return b.setItemList(list.build())
+            .setNavigateAction(Action.Builder().setTitle("Đi").setOnClickListener {
+                CarLink.nav?.startOpt(MapCtl.sel, lat, lon, name)
+                MapCtl.preview = emptyList(); MapCtl.recenter()
+                screenManager.popToRoot()
+            }.build())
+            .build()
     }
 }
 
@@ -223,6 +370,21 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
     }
     override fun onVisibleAreaChanged(visibleArea: Rect) { val r = Rect(visibleArea); hd.post { area.set(r) } }
     override fun onSurfaceDestroyed(surfaceContainer: SurfaceContainer) { hd.post { surface = null } }
+    // Kéo bản đồ (nút ✥ của Android Auto) / chụm hai ngón để zoom
+    override fun onScroll(distanceX: Float, distanceY: Float) {
+        hd.post {
+            if (MapCtl.cx.isNaN()) { MapCtl.cx = lastCx; MapCtl.cy = lastCy }
+            MapCtl.follow = false
+            MapCtl.cx += distanceX / lastTs; MapCtl.cy += distanceY / lastTs
+        }
+    }
+    private var scaleAcc = 1f
+    override fun onScale(focusX: Float, focusY: Float, scaleFactor: Float) {
+        hd.post {
+            scaleAcc *= scaleFactor
+            if (scaleAcc > 1.6f) { MapCtl.zoomBy(1); scaleAcc = 1f } else if (scaleAcc < 0.62f) { MapCtl.zoomBy(-1); scaleAcc = 1f }
+        }
+    }
     override fun onClick(x: Float, y: Float) {
         hd.post {
             when {
@@ -274,7 +436,14 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
         drawMusic(c, RectF(rx, a.bottom - musicH, a.right - g, a.bottom - g), k)
     }
 
-    // ---- bản đồ HERE (ô explore.night, hướng bắc lên trên) + tuyến + vị trí xe ----
+    // ---- bản đồ HERE (ô explore.night): xoay theo hướng xe, zoom, kéo, giao thông, trạm sạc, tuyến / phương án tuyến ----
+    private var lastCx = Double.NaN; private var lastCy = Double.NaN; private var lastTs = 300f
+    private var headDeg = 0f
+    private val altP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2B5D8A.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val chgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF4FD18B.toInt() }
+    private val chgRim = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0F141A.toInt(); style = Paint.Style.STROKE }
+    private val destP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF14B8A6.toInt() }
+
     private fun drawMap(c: Canvas, r: RectF, k: Float) {
         c.save()
         c.clipRect(r)
@@ -287,49 +456,114 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
             c.drawText("Đang chờ vị trí GPS…", r.left + 20f * k, r.centerY(), mutP)
             c.restore(); return
         }
-        val z = 16
+        val pv = MapCtl.preview
+        // xem trước tuyến: tự chọn mức zoom vừa khung, hướng bắc lên trên
+        var z = MapCtl.zoom
+        val ts = 300f * k
+        if (pv.isNotEmpty()) {
+            var mnLa = 90.0; var mxLa = -90.0; var mnLo = 180.0; var mxLo = -180.0
+            for (o in pv) for (i in o.lat.indices) { mnLa = min(mnLa, o.lat[i]); mxLa = max(mxLa, o.lat[i]); mnLo = min(mnLo, o.lon[i]); mxLo = max(mxLo, o.lon[i]) }
+            val z0 = 16
+            val n0 = (1 shl z0).toDouble()
+            val spanX = (mxLo - mnLo) / 360.0 * n0 * ts
+            val spanY = (ty(mnLa, n0) - ty(mxLa, n0)) * ts
+            var zz = z0
+            var f = max(spanX / (r.width() * 0.85), spanY / (r.height() * 0.85))
+            while (f > 1.0 && zz > 6) { zz--; f /= 2.0 }
+            z = zz
+        }
         val n = (1 shl z).toDouble()
-        val ts = 300f * k                       // cỡ một ô 512 px trên màn hình xe
-        fun tx(lon: Double) = (lon + 180.0) / 360.0 * n
-        fun ty(lat: Double): Double { val p = Math.toRadians(lat); return (1.0 - ln(tan(p) + 1.0 / cos(p)) / PI) / 2.0 * n }
-        val x0 = tx(ll.second); val y0 = ty(ll.first)
-        val cx = r.centerX(); val cy = r.top + r.height() * 0.62f
-        val ix0 = floor(x0 - (cx - r.left) / ts).toInt(); val ix1 = floor(x0 + (r.right - cx) / ts).toInt()
-        val iy0 = floor(y0 - (cy - r.top) / ts).toInt(); val iy1 = floor(y0 + (r.bottom - cy) / ts).toInt()
+        val follow = MapCtl.follow && pv.isEmpty()
+        // tâm bản đồ (toạ độ ô)
+        val ex = tx(ll.second, n); val ey = ty(ll.first, n)
+        val x0: Double; val y0: Double
+        if (pv.isNotEmpty()) {
+            var a = 0.0; var b = 0.0; var m = 0
+            for (i in pv[0].lat.indices) { a += tx(pv[0].lon[i], n); b += ty(pv[0].lat[i], n); m++ }
+            x0 = a / max(1, m); y0 = b / max(1, m)
+        } else if (!follow && !MapCtl.cx.isNaN()) { x0 = MapCtl.cx; y0 = MapCtl.cy } else { x0 = ex; y0 = ey }
+        lastCx = x0; lastCy = y0; lastTs = ts
+        // hướng: theo tuyến khi đang dẫn đường, không thì theo GPS; kéo bản đồ / xem tuyến thì bắc lên trên
+        if (follow) {
+            val h = ego?.third?.let { Math.toDegrees(it).toFloat() } ?: CarLink.gps?.bearingDeg()
+            if (h != null) { var d = h - headDeg; while (d > 180f) d -= 360f; while (d < -180f) d += 360f; headDeg += d * 0.3f }
+        }
+        val rot = if (follow) -headDeg else 0f
+        val cx = r.centerX(); val cy = if (follow) r.top + r.height() * 0.68f else r.centerY()
+        val rr = Math.hypot(r.width().toDouble(), r.height().toDouble()).toFloat()
+        c.save()
+        c.rotate(rot, cx, cy)
+        val ix0 = floor(x0 - rr / ts).toInt(); val ix1 = floor(x0 + rr / ts).toInt()
+        val iy0 = floor(y0 - rr / ts).toInt(); val iy1 = floor(y0 + rr / ts).toInt()
         for (ix in ix0..ix1) for (iy in iy0..iy1) {
-            val b = nav.mapTile(z, ix, iy, false) ?: continue
             val l = cx + ((ix - x0) * ts).toFloat(); val t = cy + ((iy - y0) * ts).toFloat()
             tmp.set(l, t, l + ts, t + ts)
-            c.drawBitmap(b, null, tmp, bmpP)
+            nav.mapTile(z, ix, iy, false)?.let { c.drawBitmap(it, null, tmp, bmpP) }
+            if (MapCtl.traffic) nav.trafficTile(z, ix, iy)?.let { c.drawBitmap(it, null, tmp, bmpP) }
         }
-        // tuyến đang đi
-        val la = nav.routeLat(); val lo = nav.routeLon()
-        if (la != null && lo != null && la.size > 1) {
+        c.restore()
+        val rad = Math.toRadians(rot.toDouble()); val cr = cos(rad).toFloat(); val sr = sin(rad).toFloat()
+        // toạ độ màn hình (đã xoay) của một điểm
+        fun px(lat: Double, lon: Double, out: FloatArray) {
+            val dx = ((tx(lon, n) - x0) * ts).toFloat(); val dy = ((ty(lat, n) - y0) * ts).toFloat()
+            out[0] = cx + dx * cr - dy * sr; out[1] = cy + dx * sr + dy * cr
+        }
+        val pt = FloatArray(2)
+        fun line(la: DoubleArray, lo: DoubleArray, p: Paint) {
             path.reset()
-            for (i in la.indices) {
-                val px = cx + ((tx(lo[i]) - x0) * ts).toFloat(); val py = cy + ((ty(la[i]) - y0) * ts).toFloat()
-                if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
-            }
-            routeP.strokeWidth = 8f * k
-            c.drawPath(path, routeP)
+            for (i in la.indices) { px(la[i], lo[i], pt); if (i == 0) path.moveTo(pt[0], pt[1]) else path.lineTo(pt[0], pt[1]) }
+            c.drawPath(path, p)
         }
-        // xe: mũi tên theo hướng đi
-        val head = ego?.third ?: 0.0
-        c.drawCircle(cx, cy, 26f * k, haloP)
+        // trạm sạc trong khung
+        if (z >= 12) for (st in Chargers.load(ctx)) {
+            px(st.lat, st.lon, pt)
+            if (!r.contains(pt[0], pt[1])) continue
+            chgRim.strokeWidth = 2f * k
+            c.drawCircle(pt[0], pt[1], 8f * k, chgP); c.drawCircle(pt[0], pt[1], 8f * k, chgRim)
+        }
+        // phương án tuyến (xem trước) hoặc tuyến đang đi
+        if (pv.isNotEmpty()) {
+            altP.strokeWidth = 7f * k; routeP.strokeWidth = 8f * k
+            for ((i, o) in pv.withIndex()) if (i != MapCtl.sel) line(o.lat, o.lon, altP)
+            pv.getOrNull(MapCtl.sel)?.let { o ->
+                line(o.lat, o.lon, routeP)
+                px(o.lat.last(), o.lon.last(), pt); c.drawCircle(pt[0], pt[1], 11f * k, destP)
+            }
+        } else {
+            val la = nav.routeLat(); val lo = nav.routeLon()
+            if (la != null && lo != null && la.size > 1) {
+                routeP.strokeWidth = 8f * k
+                line(la, lo, routeP)
+                px(la.last(), lo.last(), pt); c.drawCircle(pt[0], pt[1], 11f * k, destP)
+            }
+        }
+        // xe
+        px(ll.first, ll.second, pt)
+        val head = if (follow) 0f else (ego?.third?.let { Math.toDegrees(it).toFloat() } ?: CarLink.gps?.bearingDeg() ?: 0f)
+        c.drawCircle(pt[0], pt[1], 26f * k, haloP)
         c.save()
-        c.rotate(Math.toDegrees(head).toFloat(), cx, cy)
+        c.rotate(head, pt[0], pt[1])
+        val ax = pt[0]; val ay = pt[1]
         path.reset()
-        path.moveTo(cx, cy - 17f * k); path.lineTo(cx + 13f * k, cy + 13f * k); path.lineTo(cx, cy + 5f * k); path.lineTo(cx - 13f * k, cy + 13f * k); path.close()
+        path.moveTo(ax, ay - 17f * k); path.lineTo(ax + 13f * k, ay + 13f * k); path.lineTo(ax, ay + 5f * k); path.lineTo(ax - 13f * k, ay + 13f * k); path.close()
         c.drawPath(path, egoP)
         c.restore()
-        if (nav.active && nav.remainText.isNotEmpty()) {
-            textP.textSize = 20f * k
-            tmp.set(r.left + 12f * k, r.bottom - 50f * k, r.left + 24f * k + textP.measureText(nav.remainText), r.bottom - 12f * k)
-            c.drawRoundRect(tmp, 10f * k, 10f * k, cardP)
-            c.drawText(nav.remainText, tmp.left + 6f * k, tmp.bottom - 12f * k, textP)
+        // ô chuyến đi: điểm đến + còn lại (Hủy dẫn đường ở nút ✕ trên thanh của Android Auto)
+        if (nav.active && pv.isEmpty()) {
+            val l1 = clip(nav.destName.ifBlank { "Điểm đến" }, r.width() - 48f * k, textP.apply { textSize = 18f * k })
+            val l2 = nav.remainText.ifBlank { "Đang tính đường…" }
+            mutP.textSize = 16f * k
+            val w = max(textP.measureText(l1), mutP.measureText(l2)) + 28f * k
+            tmp.set(r.left + 12f * k, r.bottom - 74f * k, r.left + 12f * k + w, r.bottom - 12f * k)
+            c.drawRoundRect(tmp, 12f * k, 12f * k, cardP)
+            c.drawText(l1, tmp.left + 14f * k, tmp.top + 26f * k, textP)
+            c.drawText(l2, tmp.left + 14f * k, tmp.top + 50f * k, mutP)
         }
+        if (MapCtl.traffic) { mutP.textSize = 13f * k; c.drawText("Giao thông HERE", r.left + 12f * k, r.top + 22f * k, mutP) }
         c.restore()
     }
+    private fun tx(lon: Double, n: Double) = (lon + 180.0) / 360.0 * n
+    private fun ty(lat: Double, n: Double): Double { val p = Math.toRadians(lat); return (1.0 - ln(tan(p) + 1.0 / cos(p)) / PI) / 2.0 * n }
 
     private fun fresh() = SystemClock.elapsedRealtime() - CarLink.at < 2000L
 
