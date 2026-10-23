@@ -546,7 +546,7 @@ class HereNav(private val gps: LocationFallback) {
             if (d < -20.0) continue
             val win = when (nt.kind) { NOTE_TOLL -> 2000.0; else -> 1500.0 }
             if (d > win) break
-            if (bt0.isEmpty()) { bt0 = "${nt.text} · ${fmtKm(max(0.0, d))}"; bk = nt.kind }
+            if (bt0.isEmpty()) { bt0 = "${fmtKm(max(0.0, d))} · ${nt.text}"; bk = nt.kind }
             val sayAt = if (speedKmh > 60f) 1000.0 else 500.0
             if (nt.say.isNotEmpty() && d in 30.0..sayAt && i !in noteSaid && cue == null) {
                 noteSaid.add(i)

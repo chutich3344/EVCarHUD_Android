@@ -1178,6 +1178,9 @@ object HudRenderer {
             bannerP.setShadowLayer(5f * k, 0f, 0f, 0xCC000000.toInt())
             var txt = bt
             val maxW = 270f * k
+            // Dài quá thì thu nhỏ chữ (tối thiểu 18), vẫn dài mới cắt bớt
+            val w0 = bannerP.measureText(txt)
+            if (w0 > maxW) bannerP.textSize = max(18f * k, bannerP.textSize * maxW / w0)
             while (txt.length > 4 && bannerP.measureText(txt) > maxW) txt = txt.dropLast(2)
             if (txt != bt) txt = txt.trimEnd() + "…"
             canvas.drawText(txt, w - 40f * k - 105f * k, 324f * k, bannerP)
