@@ -1087,12 +1087,10 @@ class Runner(private val ctx: Context) {
         }.also { it.start() }
     }
 
-    fun saveOutputs() {
-        val out = lastOutput ?: run { status = "Chưa có kết quả để lưu"; return }
-        val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
-        val f = File(dir, "outputs_${lastIdx}.txt")
-        f.writeText(out.joinToString("\n"))
-        status = "Đã lưu: ${f.absolutePath}"
+    // Chép nhật ký + ảnh vào Download/EVCarHUD (luồng riêng: ảnh huấn luyện có thể nhiều)
+    fun saveAllToDownloads() {
+        status = "Đang lưu vào Download/EVCarHUD..."
+        Thread { status = DownloadExport.saveAll(ctx) }.start()
     }
 }
 
@@ -1466,7 +1464,6 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
                 "1 ảnh mỗi 5 s khi xe chạy, để gán nhãn và huấn luyện YOLO cho đường Việt Nam. Lưu ở ${runner.clips.datasetDir.absolutePath}" +
                     (if (runner.clips.datasetCount >= 0) " (${runner.clips.datasetCount} ảnh)" else ""),
                 runner.collectData) { runner.collectData = it; runner.savePrefs() }
-            RowLine(); NavRow("Lưu outputs", desc = "Ghi đầu ra thô của model ra file txt (gỡ lỗi).", onClick = { runner.saveOutputs() })
         }
 
         SectionTitle("Thông tin")
@@ -1478,9 +1475,8 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
                 ?: "Ghi mỗi 10 s khi app chạy.") + " Bấm để gửi file qua Zalo, Gmail, Drive...") {
                 if (!runner.thermalLog.share(shareCtx)) runner.status = "Chưa có file nhật ký nhiệt"
             }
-            RowLine(); NavRow("Lưu nhật ký vào Download", desc = "Chép file nhật ký mới nhất vào Download/EVCarHUD trên máy.") {
-                runner.status = runner.thermalLog.saveToDownloads(shareCtx)?.let { "Đã lưu $it" } ?: "Chưa có file nhật ký nhiệt hoặc lưu lỗi"
-            }
+            RowLine(); NavRow("Lưu tất cả vào Download", desc = "Chép nhật ký nhiệt, nhật ký cảnh báo, ảnh cảnh báo và ảnh huấn luyện vào Download/EVCarHUD " +
+                "(thư mục con thermal, alerts, alerts/clips, dataset). File đã chép rồi thì bỏ qua.") { runner.saveAllToDownloads() }
             if (runner.lastExit.isNotEmpty()) { RowLine(); NavRow("Lần thoát trước", desc = runner.lastExit) }
             RowLine(); NavRow("GPS", desc = runner.gps.statusText())
         }
