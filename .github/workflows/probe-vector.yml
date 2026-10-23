@@ -15,7 +15,7 @@ jobs:
       - name: Fetch and decode
         run: |
           sleep 60   # chờ Worker mới lên
-          for t in 16/52193/30795 13/6524/3849; do
+          for t in 15/26096/15397 14/13048/7698; do
             curl -sS -H "X-App: NMuIzilyzSUd-3jRFiDmIjhp" -H "X-Device: ci-probe" -o tile.bin -w "HTTP %{http_code} %{size_download} B %{content_type}\n" \
               "https://evcarhud-api.evcar-vf7.workers.dev/vector/v2/vectortiles/base/mc/$t/omv"
             python - <<'PY'
