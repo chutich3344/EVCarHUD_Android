@@ -4,6 +4,20 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PointF
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.camera.CameraUpdateFactory
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapView
+import org.maplibre.android.maps.Style
+import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.layers.PropertyFactory
 import android.graphics.RectF
 import android.graphics.Typeface
 import androidx.compose.foundation.background
@@ -99,13 +113,11 @@ object Chargers {
     }
 }
 
-// Vẽ trang Bản đồ bằng Canvas Android: ô bản đồ HERE (Web Mercator), tuyến, trạm sạc, vị trí xe.
-// z là mức phóng to (số thực); ô tải ở mức nguyên floor(z), phóng thêm phần lẻ. Bản đồ quay quanh (ox, oy) theo rotDeg.
-private class MapDraw(private val nav: HereNav, private val k: Float) {
+// Lớp vẽ đè lên bản đồ MapLibre (Canvas Android): tuyến, phương án tuyến, điểm đến, trạm sạc, vị trí xe.
+// Toạ độ màn hình lấy từ phép chiếu của MapLibre (đúng cả khi bản đồ nghiêng 3D).
+private class MapDraw(private val k: Float) {
     class Hit(val x: Float, val y: Float, val st: Chargers.St)
 
-    private val bg = Paint().apply { color = 0xFF0A1620.toInt() }
-    private val tileP = Paint(Paint.FILTER_BITMAP_FLAG)
     private val glowP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0x664FC3F7; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
     private val routeP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFF4FC3F7.toInt(); strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
     private val pinP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0A84FF.toInt() }
@@ -141,93 +153,20 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
         val t = if (l2 > 0f) (((px - ax) * dx + (py - ay) * dy) / l2).coerceIn(0f, 1f) else 0f
         return hypot(px - ax - t * dx, py - ay - t * dy)
     }
-    private val dst = RectF()
-    private val src = android.graphics.Rect()
 
-    private fun gx(lon: Double, world: Double) = (lon + 180.0) / 360.0 * world
-    private fun gy(lat: Double, world: Double): Double {
-        val r = Math.toRadians(lat.coerceIn(-85.0, 85.0))
-        return (1.0 - ln(tan(r) + 1.0 / cos(r)) / PI) / 2.0 * world
-    }
-
-    // Kết quả: các trạm đã vẽ (toạ độ màn hình) để bấm chọn
-    fun draw(c: Canvas, w: Float, h: Float, cLat: Double, cLon: Double, z: Double, rotDeg: Float, ox: Float, oy: Float,
-             sat: Boolean, traffic: Boolean, stations: List<Chargers.St>, sel: Chargers.St?, ego: Triple<Double, Double, Double?>?,
+    // Kết quả: các trạm đã vẽ (toạ độ màn hình) để bấm chọn. pr: (vĩ độ, kinh độ) -> điểm màn hình
+    fun draw(c: Canvas, w: Float, h: Float, pr: (Double, Double) -> PointF, nav: HereNav, z: Double, rotDeg: Float,
+             stations: List<Chargers.St>, sel: Chargers.St?, ego: Triple<Double, Double, Double?>?,
              alts: List<HereNav.RouteOpt>, altSel: Int, dest: Pair<Double, Double>?): List<Hit> {
-        c.drawRect(0f, 0f, w, h, bg)
-        val zt = floor(z).toInt().coerceIn(3, 19)
-        val world = 256.0 * (1 shl zt)
-        val sc = 2.0.pow(z - zt) * k                 // px màn hình / px thế giới ở mức zt
-        val cgx = gx(cLon, world); val cgy = gy(cLat, world)
-        val rot = Math.toRadians(-rotDeg.toDouble()); val cr = cos(rot); val sr = sin(rot)
-        fun sx(lat: Double, lon: Double): Float { val x = (gx(lon, world) - cgx) * sc; val y = (gy(lat, world) - cgy) * sc; return ox + (x * cr - y * sr).toFloat() }
-        fun sy(lat: Double, lon: Double): Float { val x = (gx(lon, world) - cgx) * sc; val y = (gy(lat, world) - cgy) * sc; return oy + (x * sr + y * cr).toFloat() }
-
-        // Ô bản đồ (trong khung đã quay)
-        c.save()
-        c.translate(ox, oy)
-        c.rotate(-rotDeg)
-        // Chỉ lấy các ô thật sự nằm trên màn hình (không quay: đúng khung; có quay: vòng tròn phủ khung)
-        // Ô 512 px ở mức zt-1 phủ đúng diện tích 2×2 ô 256 px ở mức zt: một lượt gọi HERE bằng 4 ô cũ
-        val tl = zt - 1
-        val n = 1 shl tl
-        val ex0: Double; val ex1: Double; val ey0: Double; val ey1: Double
-        if (rotDeg == 0f) { ex0 = ox / sc; ex1 = (w - ox) / sc; ey0 = oy / sc; ey1 = (h - oy) / sc }
-        else { val r = hypot(max(ox, w - ox).toDouble(), max(oy, h - oy).toDouble()) / sc; ex0 = r; ex1 = r; ey0 = r; ey1 = r }
-        val tx0 = floor((cgx - ex0) / 512.0).toInt(); val tx1 = floor((cgx + ex1) / 512.0).toInt()
-        val ty0 = floor((cgy - ey0) / 512.0).toInt(); val ty1 = floor((cgy + ey1) / 512.0).toInt()
-        // Ô gần tâm xin tải trước
-        val order = ArrayList<Long>()
-        for (ty in max(0, ty0)..min(n - 1, ty1)) for (tx in tx0..tx1) order.add((tx.toLong() shl 32) or ty.toLong())
-        val ctx0 = cgx / 512.0 - 0.5; val cty0 = cgy / 512.0 - 0.5
-        order.sortBy { val tx = (it shr 32).toInt(); val ty = it.toInt(); hypot(tx - ctx0, ty - cty0) }
-        val sz = (512.0 * sc).toFloat()
-        for (o in order) {
-            val tx = (o shr 32).toInt(); val ty = o.toInt(); val wx = ((tx % n) + n) % n
-            val l = ((tx * 512.0 - cgx) * sc).toFloat(); val t = ((ty * 512.0 - cgy) * sc).toFloat()
-            dst.set(l, t, l + sz + 0.5f, t + sz + 0.5f)
-            val b = nav.mapTile(tl, wx, ty, sat)
-            if (b != null) c.drawBitmap(b, null, dst, tileP)
-            else {
-                // Ô chưa tải: phóng tạm phần tương ứng của ô mức thấp hơn (như Google Maps, mờ một chút rồi nét lại)
-                var got = false
-                for (d in 1..4) {
-                    if (tl - d < 2) break
-                    val p = nav.cachedMapTile(tl - d, wx shr d, ty shr d, sat) ?: continue
-                    val part = 512 shr d
-                    val px = (wx and ((1 shl d) - 1)) * part; val py = (ty and ((1 shl d) - 1)) * part
-                    src.set(px * p.width / 512, py * p.height / 512, (px + part) * p.width / 512, (py + part) * p.height / 512)
-                    c.drawBitmap(p, src, dst, tileP)
-                    got = true
-                    break
-                }
-                // vừa thu nhỏ: ghép 4 ô mức cao hơn đã có
-                if (!got && tl < 18) for (q in 0..3) {
-                    val cb = nav.cachedMapTile(tl + 1, wx * 2 + (q and 1), ty * 2 + (q shr 1), sat) ?: continue
-                    val hz = sz / 2f; val ql = l + (q and 1) * hz; val qt = t + (q shr 1) * hz
-                    dst.set(ql, qt, ql + hz + 0.5f, qt + hz + 0.5f)
-                    c.drawBitmap(cb, null, dst, tileP)
-                }
-            }
-        }
-        if (traffic) for (o in order) {
-            val tx = (o shr 32).toInt(); val ty = o.toInt()
-            val b = nav.trafficTile(tl, ((tx % n) + n) % n, ty) ?: continue
-            val l = ((tx * 512.0 - cgx) * sc).toFloat(); val t = ((ty * 512.0 - cgy) * sc).toFloat()
-            dst.set(l, t, l + sz + 0.5f, t + sz + 0.5f)
-            c.drawBitmap(b, null, dst, tileP)
-        }
-        c.restore()
-
         // Các phương án tuyến đang xem trước: tuyến chưa chọn xanh sẫm, tuyến chọn sáng lên và vẽ đè lên trên
         altPts = Array(alts.size) { i ->
             val r = alts[i]; val step = max(1, r.lat.size / 400)
             val m = (r.lat.size + step - 1) / step + 1
             val a = FloatArray(m * 2); var j = 0
             var q = 0
-            while (q < r.lat.size) { a[j++] = sx(r.lat[q], r.lon[q]); a[j++] = sy(r.lat[q], r.lon[q]); q += step }
+            while (q < r.lat.size) { val p = pr(r.lat[q], r.lon[q]); a[j++] = p.x; a[j++] = p.y; q += step }
             val e = r.lat.size - 1
-            a[j++] = sx(r.lat[e], r.lon[e]); a[j++] = sy(r.lat[e], r.lon[e])
+            val pe = pr(r.lat[e], r.lon[e]); a[j++] = pe.x; a[j++] = pe.y
             a.copyOf(j)
         }
         for (pass in 0..1) for (i in altPts.indices) {
@@ -244,7 +183,7 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
             }
         }
         if (dest != null) {
-            val x = sx(dest.first, dest.second); val y = sy(dest.first, dest.second)
+            val pd = pr(dest.first, dest.second); val x = pd.x; val y = pd.y
             path.reset(); path.moveTo(x, y); path.lineTo(x - 9f * k, y - 18f * k); path.lineTo(x + 9f * k, y - 18f * k); path.close()
             c.drawPath(path, destP); c.drawCircle(x, y - 24f * k, 14f * k, destP); c.drawCircle(x, y - 24f * k, 5f * k, white)
         }
@@ -253,8 +192,11 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
         val la = nav.routeLat(); val lo = nav.routeLon()
         if (la != null && lo != null && la.size > 1) {
             path.reset()
-            path.moveTo(sx(la[0], lo[0]), sy(la[0], lo[0]))
-            for (i in 1 until la.size) path.lineTo(sx(la[i], lo[i]), sy(la[i], lo[i]))
+            val step = max(1, la.size / 800)
+            val p0 = pr(la[0], lo[0]); path.moveTo(p0.x, p0.y)
+            var i = step
+            while (i < la.size) { val p = pr(la[i], lo[i]); path.lineTo(p.x, p.y); i += step }
+            val pl = pr(la[la.size - 1], lo[lo.size - 1]); path.lineTo(pl.x, pl.y)
             glowP.strokeWidth = 16f * k; c.drawPath(path, glowP)
             routeP.strokeWidth = 7f * k; c.drawPath(path, routeP)
         }
@@ -264,7 +206,7 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
         label.textSize = 11f * k; labelRim.textSize = 11f * k; labelRim.strokeWidth = 3f * k
         val pad = 30f * k
         for (s in stations) {
-            val x = sx(s.lat, s.lon); val y = sy(s.lat, s.lon)
+            val ps = pr(s.lat, s.lon); val x = ps.x; val y = ps.y
             if (x < -pad || x > w + pad || y < -pad || y > h + pad) continue
             val big = s === sel
             val r = (if (big) 15f else 11f) * k
@@ -279,7 +221,7 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
 
         // Xe: chấm xanh, có mũi tên khi biết hướng
         if (ego != null) {
-            val x = sx(ego.first, ego.second); val y = sy(ego.first, ego.second)
+            val pe = pr(ego.first, ego.second); val x = pe.x; val y = pe.y
             c.drawCircle(x, y, 26f * k, haloP)
             val hd = ego.third
             if (hd == null) {
@@ -304,21 +246,11 @@ private class MapDraw(private val nav: HereNav, private val k: Float) {
         c.drawPath(path, white)
     }
 
-    // Đổi dịch chuyển màn hình (px, đã quay) thành toạ độ tâm mới
-    fun panTo(cLat: Double, cLon: Double, z: Double, rotDeg: Float, dx: Float, dy: Float): Pair<Double, Double> {
-        val zt = floor(z).toInt().coerceIn(3, 19)
-        val world = 256.0 * (1 shl zt)
-        val sc = 2.0.pow(z - zt) * k
-        val rot = Math.toRadians(rotDeg.toDouble())
-        val wx = (dx * cos(rot) - dy * sin(rot)) / sc; val wy = (dx * sin(rot) + dy * cos(rot)) / sc
-        val gxN = gx(cLon, world) - wx; val gyN = gy(cLat, world) - wy
-        val lon = gxN / world * 360.0 - 180.0
-        val lat = Math.toDegrees(atan(kotlin.math.sinh(PI * (1 - 2 * gyN / world))))
-        return Pair(lat, lon)
-    }
 }
 
 private val KW_STEPS = intArrayOf(0, 60, 120, 250)
+// Mức phóng to của trang tính theo ô 256 px × 0,75 dp; MapLibre tính theo ô 512 dp: lệch log2(512 / 192)
+private const val ML_ZOOM_OFF = 1.415
 
 private fun fmtMin(sec: Double): String {
     val m = (sec / 60).toInt().coerceAtLeast(1)
@@ -346,14 +278,45 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
     val ctx = LocalContext.current
     val nav = runner.nav
     val k = LocalDensity.current.density * 0.75f
-    val draw = remember { MapDraw(nav, k) }
+    val draw = remember { MapDraw(k) }
+    // Bản đồ vector MapLibre (tạo một lần cho trang, huỷ khi rời trang)
+    val mapView = remember { VectorMap.init(ctx); MapView(ctx).apply { onCreate(null); setMaximumFps(15) } }
+    val mapRef = remember { arrayOfNulls<MapLibreMap>(1) }
+    var styleReady by remember { mutableStateOf<Style?>(null) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val obs = LifecycleEventObserver { _, e ->
+            when (e) {
+                Lifecycle.Event.ON_START -> mapView.onStart()
+                Lifecycle.Event.ON_RESUME -> mapView.onResume()
+                Lifecycle.Event.ON_PAUSE -> mapView.onPause()
+                Lifecycle.Event.ON_STOP -> mapView.onStop()
+                else -> {}
+            }
+        }
+        lifecycle.addObserver(obs)
+        mapView.getMapAsync { m ->
+            mapRef[0] = m
+            m.uiSettings.setAllGesturesEnabled(false)       // cử chỉ do trang tự xử lý (bám xe, chọn trạm, chọn tuyến)
+            m.uiSettings.isLogoEnabled = false
+            m.uiSettings.isAttributionEnabled = false
+            m.uiSettings.isCompassEnabled = false
+            m.setStyle(Style.Builder().fromJson(VectorMap.style())) { st -> styleReady = st }
+        }
+        onDispose {
+            lifecycle.removeObserver(obs)
+            mapRef[0] = null
+            mapView.onPause(); mapView.onStop(); mapView.onDestroy()
+        }
+    }
+    val camRef = remember { DoubleArray(6) { Double.NaN } }   // camera đã đặt lần trước: lat, lon, zoom, góc quay, nghiêng, đệm trên
     val stations by produceState(initialValue = emptyList<Chargers.St>()) { value = withContext(Dispatchers.IO) { Chargers.load(ctx) } }
     // 10 hình/giây là đủ cho bản đồ, đỡ nóng máy hơn 60 hình/giây
     val tick by produceState(0) { while (true) { delay(100); value++ } }
     var kwIdx by rememberSaveable { mutableStateOf(0) }
     var sat by rememberSaveable { mutableStateOf(false) }
     var traffic by rememberSaveable { mutableStateOf(false) }
-    var tilt by rememberSaveable { mutableStateOf(false) }
+    var tilt by rememberSaveable { mutableStateOf(true) }      // 3D: nghiêng 50° + nhà nổi; máy nóng (mức 2+) tự về 2D
     var zoom by rememberSaveable { mutableStateOf(14.5) }
     var follow by rememberSaveable { mutableStateOf(true) }
     var cLat by rememberSaveable { mutableStateOf(Double.NaN) }
@@ -383,6 +346,17 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
     if (cLat.isNaN()) { cLat = 10.7769; cLon = 106.7009 }   // chưa có GPS: trung tâm TP.HCM
     val rotDeg = if (navOn && follow && ego != null) Math.toDegrees(ego.third).toFloat() else userRot
     rotRef[0] = rotDeg
+    val tilt3d = tilt && runner.heatLevel < 2
+    // Lớp bản đồ theo nút: vệ tinh che nền vector, giao thông phủ trên đường, 3D thay nhà phẳng bằng nhà nổi
+    val st = styleReady
+    LaunchedEffect(st, sat, traffic, tilt3d) {
+        if (st == null) return@LaunchedEffect
+        fun vis(id: String, on: Boolean) = st.getLayer(id)?.setProperties(PropertyFactory.visibility(if (on) Property.VISIBLE else Property.NONE))
+        vis("sat", sat)
+        for (id in VectorMap.BASE_LAYERS) vis(id, !sat)
+        if (!sat) { vis("bld-3d", tilt3d); vis("bld-flat", !tilt3d) }
+        vis("traffic", traffic)
+    }
 
     // Gợi ý địa chỉ khi gõ (dừng gõ 0,45 s mới hỏi HERE: mỗi lần hỏi là 1 lượt gọi)
     LaunchedEffect(query, searching) {
@@ -411,20 +385,23 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
     val shown = remember(stations, minKw) { stations.filter { it.maxKw >= minKw } }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF0A1620))) {
+        AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
         androidx.compose.foundation.Canvas(
             Modifier
                 .fillMaxSize()
-                .graphicsLayer {
-                    if (tilt) { rotationX = 38f; cameraDistance = 12f * density; scaleX = 1.25f; scaleY = 1.25f }
-                }
                 .pointerInput(navOn) {
                     detectTransformGestures { _, pan, zf, rot ->
                         // đang bám xe thì giữ nguyên góc đang thấy rồi mới cho xoay tay
                         if (follow) { userRot = rotRef[0]; follow = false }
                         if (zf != 1f) zoom = (zoom + ln(zf.toDouble()) / ln(2.0)).coerceIn(5.0, 18.5)
                         if (rot != 0f) userRot = ((userRot - rot) % 360f + 360f) % 360f
-                        val p = draw.panTo(cLat, cLon, zoom, userRot, pan.x, pan.y)
-                        cLat = p.first; cLon = p.second
+                        // kéo: điểm tâm hiện tại dời theo ngón tay (phép chiếu MapLibre, đúng cả khi nghiêng)
+                        val m = mapRef[0]
+                        if (m != null) {
+                            val c0 = m.projection.toScreenLocation(LatLng(cLat, cLon))
+                            val ll = m.projection.fromScreenLocation(PointF(c0.x - pan.x, c0.y - pan.y))
+                            if (!ll.latitude.isNaN() && !ll.longitude.isNaN()) { cLat = ll.latitude; cLon = ll.longitude }
+                        }
                     }
                 }
                 .pointerInput(Unit) {
@@ -438,14 +415,29 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
                 }
         ) {
             tick
-            val oy = if (navOn && follow) size.height * 0.72f else size.height * 0.5f
+            val m = mapRef[0] ?: return@Canvas
+            // Đặt camera MapLibre theo trạng thái trang (chỉ khi đổi). Đang bám xe: xe nằm ở 72% chiều cao (đệm trên 44%)
+            val padTop = if (navOn && follow) size.height * 0.44 else 0.0
+            val mz = zoom - ML_ZOOM_OFF
+            val pitch = if (tilt3d) 50.0 else 0.0
+            val cam = doubleArrayOf(cLat, cLon, mz, rotDeg.toDouble(), pitch, padTop)
+            if (!cam.contentEquals(camRef)) {
+                cam.copyInto(camRef)
+                m.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder()
+                    .target(LatLng(cLat, cLon)).zoom(mz).bearing(rotDeg.toDouble()).tilt(pitch)
+                    .padding(0.0, padTop, 0.0, 0.0).build()))
+            }
+            val pj = m.projection
             drawIntoCanvas { cv ->
-                hitsRef[0] = draw.draw(cv.nativeCanvas, size.width, size.height, cLat, cLon, zoom, rotDeg, size.width / 2f, oy,
-                    sat, traffic, shown, sel, egoLl, if (navOn) emptyList() else alts, altSel,
+                hitsRef[0] = draw.draw(cv.nativeCanvas, size.width, size.height, { la, lo -> pj.toScreenLocation(LatLng(la, lo)) },
+                    nav, zoom, rotDeg, shown, sel, egoLl, if (navOn) emptyList() else alts, altSel,
                     if (navOn) null else dest?.let { Pair(it.first, it.second) })
             }
         }
 
+        // Ghi nguồn dữ liệu bản đồ (bắt buộc theo điều khoản HERE)
+        Text("© HERE", color = Color(0x99FFFFFF), fontSize = 10.sp,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = if (navOn) 70.dp else 6.dp))
         if (nav.tileNote.isNotEmpty() && !navOn) {
             Text(nav.tileNote, color = Color(0xFFFFC107), fontSize = 12.sp,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp).background(Color(0xCC000000), RoundedCornerShape(10.dp)).padding(8.dp))
@@ -592,7 +584,7 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
             Column(Modifier.clip(RoundedCornerShape(26.dp)).background(Color(0xF00E202C))) {
                 MapBtn(if (sat) "Vệ\ntinh" else "Bản\nđồ", false, 12) { sat = !sat }
                 MapBtn("Giao\nthông", traffic, 11) { traffic = !traffic }
-                // Nút 3D tạm tắt: nghiêng ảnh bản đồ phẳng làm chữ méo, nhòe; chờ chuyển sang bản đồ vector
+                MapBtn("3D", tilt3d, 16) { tilt = !tilt }
                 MapBtn("◎", follow, 22) { follow = true; if (!navOn) zoom = 14.5 }
             }
             Column(Modifier.clip(RoundedCornerShape(26.dp)).background(Color(0xF00E202C))) {

@@ -61,6 +61,10 @@ android {
 dependencies {
     // Đọc webcam / camera USB chuẩn UVC qua OTG (Maven Central) cho máy không hỗ trợ camera ngoài qua Camera2
     implementation("com.herohan:UVCAndroid:1.0.13")
+    // Trang Bản đồ: bản đồ vector + nhà 3D (ô vector HERE qua Worker)
+    implementation("org.maplibre.gl:android-sdk:11.8.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

@@ -197,6 +197,7 @@ class Runner(private val ctx: Context) {
     // Dòng hiệu năng trên HUD (luồng nhiệt ghi, luồng vẽ đọc)
     @Volatile private var perfText = ""
     @Volatile private var perfCpu = Float.NaN
+    @Volatile var heatLevel = 0           // mức giảm tải nhiệt hiện tại (trang Bản đồ tự về 2D khi >= 2)
     var warnOn by mutableStateOf(true)        // cảnh báo va chạm (tiếng tít + viền đỏ)
     var alertFlash by mutableStateOf(false)   // pha "sáng" của viền đỏ chớp
     var cautionOn by mutableStateOf(false)    // viền vàng "chú ý" (không tiếng)
@@ -603,6 +604,7 @@ class Runner(private val ctx: Context) {
                         if (lv >= held) { held = lv; calm = 0 }
                         else if (++calm >= 3) { held--; calm = 0 }   // 3 lần đọc liền (6 s) thấp hơn mới hạ mức
                         applyThermal(held)
+                        heatLevel = held
                         thermalLine = thermalText(ti, held)
                         perfCpu = cpuEma
                         perfText = buildString {
