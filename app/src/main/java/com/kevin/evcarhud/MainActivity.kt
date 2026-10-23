@@ -126,6 +126,7 @@ private const val DIM_STILL_MS = 20_000L  // đứng yên bao lâu thì giảm s
 private const val DIM_BRIGHTNESS = 0.08f  // độ sáng khi giảm (0..1)
 private const val SPEED_EMA = 0.9f      // làm mượt tốc độ hiển thị
 private const val THERMAL_POLL_MS = 2000L
+private const val COOLER_DEW_C = 25f       // sò lạnh: pin dưới mức này dễ đọng hơi nước
 private const val STATUS_MS = 500L      // chu kỳ cập nhật dòng trạng thái (đỡ recomposition + log)
 private const val RESYNC_NS = 250_000_000L  // trễ quá 250 ms thì đồng bộ lại đồng hồ phát, không "tua nhanh"
 private const val STALL_MS = 5000L      // camera không ra khung nào quá 5 s -> coi là treo, tự mở lại
@@ -187,6 +188,8 @@ class Runner(private val ctx: Context) {
     var yoloOn by mutableStateOf(true)    // nhận diện loại vật thể bằng YOLO
     private var detector: YoloDetector? = null
     var thermalAuto by mutableStateOf(true)  // tự giảm tải khi máy nóng
+    // Có gắn sò lạnh (quạt Peltier) sau lưng máy: nhắc khi pin lạnh dễ đọng sương, hoặc vẫn nóng (sò mất nguồn)
+    var cooler by mutableStateOf(prefs.getBoolean("cooler", false))
     // Nhiệt độ pin mục tiêu (°C): bắt đầu giãn nhịp sớm khi pin tiến gần mức này, không chờ Android báo nóng
     var coolTarget by mutableStateOf(prefs.getFloat("coolTarget", 40f).coerceIn(35f, 45f))
     var capFps by mutableStateOf(true)       // phát đúng nhịp thời gian thực của video
@@ -286,7 +289,7 @@ class Runner(private val ctx: Context) {
             .putInt("alertSound", alertSound).putBoolean("collect", collectData)
             .putFloat("camH", camH).putBoolean("reflect", reflect)
             .putInt("navVehicle", navVehicle).putBoolean("miniMap", miniMap)
-            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview)
+            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).putBoolean("cooler", cooler)
             .putBoolean("dimStill", dimStill).apply()
         nav.vehicle = if (navVehicle == 1) "scooter" else "car"
         nav.showMini = miniMap
@@ -574,6 +577,7 @@ class Runner(private val ctx: Context) {
             var cpuLv = 0
             var cool72 = -1L
             var hotSaid = -1_000_000L
+            var coolerSaid = -1_000_000L
             var calm = 0
             while (run.alive) {
                 val job = q.poll(100, TimeUnit.MILLISECONDS)
@@ -610,9 +614,25 @@ class Runner(private val ctx: Context) {
                         // Mức 3 trở lên: nhắc người lái một lần mỗi 10 phút
                         if (thermalAuto && held >= 3 && c - hotSaid > 600_000L) {
                             hotSaid = c
-                            val t = if (ti.plugged) "Máy đang nóng, hãy bật điều hoà hướng vào điện thoại và dùng sạc chậm"
-                                    else "Máy đang nóng, hãy bật điều hoà hướng vào điện thoại"
+                            val t = when {
+                                cooler -> "Máy vẫn nóng dù có sò lạnh, kiểm tra sò đã cắm nguồn và áp sát lưng máy chưa"
+                                ti.plugged -> "Máy đang nóng, hãy bật điều hoà hướng vào điện thoại và dùng sạc chậm"
+                                else -> "Máy đang nóng, hãy bật điều hoà hướng vào điện thoại"
+                            }
                             if (alertSound == 1 && voice.ready) voice.say(t, minGapMs = 0L) else beeper?.chime()
+                        }
+                        // Sò lạnh: pin dưới 25°C là ngang điểm sương không khí nóng ẩm, lưng máy dễ đọng nước (nhắc mỗi 10 phút)
+                        if (cooler && !ti.batteryC.isNaN() && c - coolerSaid > 600_000L) {
+                            val t = when {
+                                ti.batteryC < COOLER_DEW_C -> "Pin dưới ${COOLER_DEW_C.roundToInt()} độ, dễ đọng hơi nước, nên giảm mức sò lạnh"
+                                ti.batteryC >= coolTarget - 2f && held < 3 -> "Pin đang ấm lên, sò lạnh có thể chưa chạy"
+                                else -> ""
+                            }
+                            if (t.isNotEmpty()) {
+                                coolerSaid = c
+                                if (alertSound == 1 && voice.ready) voice.say(t, minGapMs = 0L) else beeper?.chime()
+                                status = t
+                            }
                         }
                         // Nhật ký nhiệt: mỗi 10 s một dòng CSV (xem Cài đặt › Thông tin › Nhật ký nhiệt)
                         if (c - lastTLog >= 10_000L) {
@@ -1420,6 +1440,10 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
         SectionTitle("Hiệu năng")
         SettingsCard {
             SwitchRow("Tự giảm tải khi nóng", "Giãn nhịp YOLO và NPU theo nhiệt độ máy.", runner.thermalAuto) { runner.thermalAuto = it }
+            RowLine(); SwitchRow("Có sò lạnh", "Bật khi gắn sò lạnh (quạt Peltier) sau lưng máy. App nhắc khi pin xuống dưới 25°C (dễ đọng hơi nước) " +
+                "và khi pin vẫn ấm lên (sò mất nguồn hoặc không áp sát). Tắt: nhắc bật điều hoà hướng vào máy như cũ.", runner.cooler) {
+                runner.cooler = it; runner.savePrefs()
+            }
             RowLine(); SwitchRow("Giảm sáng khi đứng yên", "Xe dừng quá 20 giây thì màn hình tối bớt cho mát máy. Xe chạy hoặc có cảnh báo là sáng lại ngay.",
                 runner.dimStill) { runner.dimStill = it; runner.savePrefs() }
             RowLine(); SliderRow("Nhiệt độ mục tiêu", "${runner.coolTarget.roundToInt()}°C", runner.coolTarget, 35f..45f,
