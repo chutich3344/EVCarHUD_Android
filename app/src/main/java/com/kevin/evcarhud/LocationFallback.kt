@@ -140,13 +140,14 @@ class LocationFallback(ctx: Context) : LocationListener {
         if (!hasPermission()) return "GPS: chưa cấp quyền vị trí"
         if (loc == null || SystemClock.elapsedRealtime() - locAt > 5000L) return "GPS: đang chờ định vị"
         val sp = speedKmh()?.let { "%.0f km/h".format(it) } ?: "--"
-        return "GPS: $sp · đường: ${street.ifBlank { "--" }} ($geoNote)"
+        val acc = loc?.takeIf { it.hasAccuracy() }?.let { " · sai số ~%.0f m".format(it.accuracy) } ?: ""
+        return "GPS: $sp$acc"
     }
 
     override fun onLocationChanged(l: Location) {
         loc = l
         locAt = SystemClock.elapsedRealtime()
-        lookup(l)
+        // Tên đường / giới hạn tốc độ lấy từ HERE (HereGeo, HereNav): không tra Geocoder / OpenStreetMap nữa cho đỡ mạng và pin
     }
 
     private fun lookup(l: Location) {

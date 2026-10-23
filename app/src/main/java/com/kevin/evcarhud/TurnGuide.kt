@@ -18,14 +18,13 @@ class TurnInfo(val turn: Int, val distanceM: Int, val exit: Int, val nextStreet:
 // Hoạt ảnh hướng rẽ vẽ sẵn: đường đến ngã rẽ + nhánh phụ mờ, mũi tên vàng chạy dọc tuyến sắp đi
 object TurnGuide {
     // Vị trí ô trên HUD (toạ độ theo khung rộng 1280, nhân với k)
-    // Hud dịch cả ô sang mép phải (canvas.translate). Ô gọn, nằm hẳn phía trên vạch capo (capo mặc định che 15% đáy = y 612): chữ "300 m" + tên đường không bị cắt
+    // Hud dịch cả ô sang mép phải (canvas.translate). Ô nằm sát góc phải trên, không khung viền: chỉ đường sắp đi + mũi tên chạy
     private const val PX1 = 40f
-    private const val PY1 = 300f
+    private const val PY1 = 20f
     private const val PX2 = 250f
-    private const val PY2 = 578f
-    private const val ROAD_BOTTOM = 492f
-    private const val DIST_Y = 534f
-    private const val STREET_Y = 564f
+    private const val ROAD_BOTTOM = 212f
+    private const val DIST_Y = 256f
+    private const val STREET_Y = 286f
 
     private const val JX = 0.5f      // ngã rẽ (toạ độ đơn vị 0..1 trong vùng đường)
     private const val JY = 0.62f
@@ -65,11 +64,8 @@ object TurnGuide {
         glassLine.strokeWidth = 2.5f * k
         canvas.drawRoundRect(r, rad, rad, glassLine)
     }
-    private val branchP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0x44FFFFFF; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
-    }
     private val routeP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xAAFFFFFF.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+        color = 0xE6FFFFFF.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
     }
     private val arrowP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFC107.toInt(); style = Paint.Style.FILL }
     private val endP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFC107.toInt(); style = Paint.Style.STROKE }
@@ -193,7 +189,6 @@ object TurnGuide {
         if (info == null || info.turn <= 0) return
         ensure(info)
 
-        glass(canvas, RectF(PX1 * k, PY1 * k, PX2 * k, PY2 * k), k)
         val road = RectF((PX1 + 12f) * k, (PY1 + 12f) * k, (PX2 - 12f) * k, ROAD_BOTTOM * k)
         val rw = road.width()
         val rh = road.height()
@@ -203,28 +198,9 @@ object TurnGuide {
         canvas.save()
         canvas.clipRect(road)
 
-        // Nhánh phụ mờ tại ngã rẽ (cho giống ngã ba/ngã tư), vòng xuyến vẽ nguyên vòng
-        branchP.strokeWidth = 6f * k
-        path.reset()
-        if (kind == ROUNDABOUT) {
-            canvas.drawCircle(ux(RING_CX), uy(RING_CY), RING_R * rw, branchP)
-            path.moveTo(ux(JX), uy(1.06f)); path.lineTo(ux(JX), uy(RING_CY + RING_R))
-            for (ex in 0..3) {
-                val th = ex * PI.toFloat() / 2f + PI.toFloat() / 2f
-                val ox = sin(th); val oy = cos(th)
-                path.moveTo(ux(RING_CX + RING_R * ox), uy(RING_CY + RING_R * oy))
-                path.lineTo(ux(RING_CX + (RING_R + 0.55f) * ox), uy(RING_CY + (RING_R + 0.55f) * oy))
-            }
-        } else if (kind != UTURN && kind != ARRIVE) {
-            path.moveTo(ux(JX), uy(1.06f)); path.lineTo(ux(JX), uy(JY))
-            path.moveTo(ux(JX), uy(JY)); path.lineTo(ux(JX), uy(-0.06f))
-            path.moveTo(ux(JX), uy(JY)); path.quadTo(ux(JX), uy(0.30f), ux(-0.06f), uy(0.30f))
-            path.moveTo(ux(JX), uy(JY)); path.quadTo(ux(JX), uy(0.30f), ux(1.06f), uy(0.30f))
-        }
-        canvas.drawPath(path, branchP)
-
-        // Tuyến sắp đi
-        routeP.strokeWidth = 10f * k
+        // Chỉ vẽ đường sắp đi (không vẽ các nhánh còn lại); bóng tối để nổi trên hình camera vì không còn khung nền
+        routeP.strokeWidth = 12f * k
+        routeP.setShadowLayer(6f * k, 0f, 0f, 0xB3000000.toInt())
         path.reset()
         val n = pts.size / 2
         path.moveTo(ux(pts[0]), uy(pts[1]))
@@ -261,6 +237,7 @@ object TurnGuide {
         arrow.lineTo(ax - dx * a * 0.8f - px * a * 0.75f, ay - dy * a * 0.8f - py * a * 0.75f)
         arrow.close()
         arrowP.alpha = (255 * alpha).toInt()
+        arrowP.setShadowLayer(5f * k, 0f, 0f, 0x99000000.toInt())
         canvas.drawPath(arrow, arrowP)
 
         // Điểm đến: vòng tròn vàng ở cuối tuyến
@@ -272,11 +249,13 @@ object TurnGuide {
 
         // Khoảng cách đến ngã rẽ + tên đường sau khi rẽ
         if (info.distanceM > 0) {
-            distP.textSize = 40f * k
+            distP.textSize = 44f * k
+            distP.setShadowLayer(5f * k, 0f, 0f, 0xCC000000.toInt())
             canvas.drawText(fmtDist(info.distanceM), (PX1 + PX2) / 2f * k, DIST_Y * k, distP)
         }
         if (info.nextStreet.isNotBlank()) {
-            streetP.textSize = 21f * k
+            streetP.textSize = 24f * k
+            streetP.setShadowLayer(5f * k, 0f, 0f, 0xCC000000.toInt())
             val w = (PX2 - PX1 - 24f) * k
             val cnt = streetP.breakText(info.nextStreet, true, w, null)
             val txt = if (cnt < info.nextStreet.length) info.nextStreet.substring(0, maxOf(0, cnt - 1)) + "…" else info.nextStreet

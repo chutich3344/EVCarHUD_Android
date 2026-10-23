@@ -661,11 +661,11 @@ object HudRenderer {
         val txt = if (speedKmh > 1f) speedKmh.roundToInt().toString() else "--"
         tBig.typeface = medium
         tBig.textAlign = Paint.Align.CENTER
-        tBig.textSize = 96f * k
+        tBig.textSize = 136f * k
         tBig.color = if (over) (if (off) 0x59FF5252 else 0xFFFF5252.toInt()) else 0xFFFFFFFF.toInt()
         canvas.drawText(txt, cx, baseline, tBig)
         val nw = tBig.measureText(txt)
-        label(canvas, "km/h", cx + nw / 2f + 10f * k, baseline, 28f * k, 0xFFE0E6EA.toInt(), Paint.Align.LEFT, medium)
+        label(canvas, "km/h", cx + nw / 2f + 10f * k, baseline, 38f * k, 0xFFE0E6EA.toInt(), Paint.Align.LEFT, medium)
     }
 
     // Trả về mức cảnh báo: 0 = bình thường, 1 = chú ý (viền vàng, không tiếng), 2 = nguy hiểm (tiếng tít + viền đỏ)
@@ -991,12 +991,12 @@ object HudRenderer {
 
         // Biển giới hạn: chỗ cố định bên phải số khoảng cách (số đổi 1 -> 3 chữ số biển không nhảy).
         // Biển STOP / đèn camera vừa thấy: ngay dưới (vài giây)
-        val limR = 54f * k
-        val signX = midX + 232f * k
+        val limR = 72f * k
+        val signX = midX + 250f * k
         if (limitKmh > 0) drawLimitSign(canvas, signX, 160f * k, limR, limitKmh, speedKmh > limitKmh + 3f, k, animSec)
         if (sign != null) { seenCls = sign.cls; seenAt = SystemClock.elapsedRealtime() }
         if (seenCls >= 0 && SystemClock.elapsedRealtime() - seenAt < SEEN_MS) {
-            drawSeenSign(canvas, signX, if (limitKmh > 0) 160f * k + limR + 44f * k else 160f * k, 34f * k, seenCls, k)
+            drawSeenSign(canvas, signX, if (limitKmh > 0) 160f * k + limR + 52f * k else 160f * k, 44f * k, seenCls, k)
         }
         // Dưới, giữa: tốc độ thẳng cột với số khoảng cách, chân chữ bám vạch capo (hạ vạch thì số xuống theo)
         val frameBot = imgH * cam.scale
@@ -1004,16 +1004,16 @@ object HudRenderer {
         // Hiệu năng máy: chữ trắng nhỏ có bóng, góc trái ngay trên vạch capo
         if (perfText.isNotEmpty()) {
             tSmall.setShadowLayer(4f * k, 0f, 0f, 0xCC000000.toInt())
-            label(canvas, perfText, 24f * k, min(hoodYd, frameBot) - 12f * k, 16f * k,
+            label(canvas, perfText, 24f * k, min(hoodYd, frameBot) - 12f * k, 24f * k,
                 if (perfHot) 0xFFFF5252.toInt() else 0xFFFFFFFF.toInt(), Paint.Align.LEFT, medium)
             tSmall.clearShadowLayer()
         }
-        // Chỉ đường: ô hướng rẽ bên phải (khung trong suốt có viền), ô bản đồ bên trái
+        // Chỉ đường: hướng rẽ ở góc phải trên (không khung), ô bản đồ to bên trái
         canvas.save()
         canvas.translate(w - 40f * k - 250f * k, 0f)
         TurnGuide.draw(canvas, k, turn, animSec)
         canvas.restore()
-        nav?.drawPanel(canvas, k, 40f * k, 300f * k, 270f * k, 278f * k, speedKmh)
+        nav?.drawPanel(canvas, k, 40f * k, 176f * k, 340f * k, 384f * k, speedKmh)
         return level
     }
 }
