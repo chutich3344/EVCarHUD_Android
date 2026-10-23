@@ -579,7 +579,7 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
             }
         }
 
-        // Cột nút bên phải: lớp bản đồ, 3D, về vị trí xe, phóng to / thu nhỏ
+        // Cột nút bên phải: lớp bản đồ, về vị trí xe, phóng to / thu nhỏ
         Column(Modifier.align(Alignment.CenterEnd).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalAlignment = Alignment.CenterHorizontally) {
             // La bàn: hiện khi bản đồ đang xoay tay, bấm để quay về hướng bắc
@@ -592,7 +592,7 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
             Column(Modifier.clip(RoundedCornerShape(26.dp)).background(Color(0xF00E202C))) {
                 MapBtn(if (sat) "Vệ\ntinh" else "Bản\nđồ", false, 12) { sat = !sat }
                 MapBtn("Giao\nthông", traffic, 11) { traffic = !traffic }
-                MapBtn("3D", tilt, 16) { tilt = !tilt }
+                // Nút 3D tạm tắt: nghiêng ảnh bản đồ phẳng làm chữ méo, nhòe; chờ chuyển sang bản đồ vector
                 MapBtn("◎", follow, 22) { follow = true; if (!navOn) zoom = 14.5 }
             }
             Column(Modifier.clip(RoundedCornerShape(26.dp)).background(Color(0xF00E202C))) {
