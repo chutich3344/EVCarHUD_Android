@@ -37,6 +37,7 @@ object HudRenderer {
     private const val FOCUS_RANGE_M = 60f   // chỉ làm nổi bật đối tượng trong tầm này (m)
     private const val WARN_MIN_SPEED = 2f      // m/s (~7 km/h): xe đứng yên thì không cảnh báo
     private const val WARN_MIN_DIST = 4f        // m: khoảng cách bám đuôi tối thiểu (chỉ áp dụng khi chạy nhanh)
+    private const val CITY_BOX_M = 50f          // m: chế độ Trong phố chỉ vẽ hộp vật gần hơn mức này
     private const val WARN_HEADWAY_S = 1.0f     // s: bám đuôi nguy hiểm khi (khoảng cách / tốc độ xe) nhỏ hơn mức này
     private const val CRAWL_SPEED = 5.5f        // m/s (~20 km/h): dưới mức này coi là kẹt xe / bò, không báo theo khoảng cách đơn thuần
     private const val MIN_CLOSING = 0.3f        // m/s: tốc độ áp sát tối thiểu để tính là "đang lao tới"
@@ -942,9 +943,11 @@ object HudRenderer {
             val gd = if (d === leadDet) lx else objDist(cam, d)
             return if (vEgo >= WARN_MIN_SPEED && gd < safeGap) CAUTION_C else SAFE_C
         }
+        // Trong phố: chỉ vẽ hộp vật trong vòng 50 m cho đỡ rối (vật gần nhất / xe phía trước luôn vẽ; cảnh báo vẫn tính mọi vật)
+        fun near(d: Detection) = roadMode != MODE_CITY || d === nearDet || d === leadDet || !(objDist(cam, d) > CITY_BOX_M)
         if (show) {
-            for (d in objs) if (d !in focus && d !== nearDet) drawDim(canvas, d, cam.scale, k)
-            for (d in objs) if ((d in focus || d === nearDet) && d !== leadDet) drawFocus(canvas, d, cam.scale, k, d === nearDet, stateColor(d))
+            for (d in objs) if (d !in focus && d !== nearDet && near(d)) drawDim(canvas, d, cam.scale, k)
+            for (d in objs) if ((d in focus || d === nearDet) && d !== leadDet && near(d)) drawFocus(canvas, d, cam.scale, k, d === nearDet, stateColor(d))
             if (leadDet != null) drawFocus(canvas, leadDet, cam.scale, k, true, stateColor(leadDet))
         }
 
