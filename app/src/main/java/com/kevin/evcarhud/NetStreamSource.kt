@@ -87,11 +87,8 @@ class NetStreamSource(
         }
     }
 
-    private fun wifiNetwork(): Network? = try {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        @Suppress("DEPRECATION")
-        cm.allNetworks.firstOrNull { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
-    } catch (_: Throwable) { null }
+    // Ưu tiên Wi‑Fi cam do app tự nối (DashcamScan.kt), không có thì Wi‑Fi máy đang nối
+    private fun wifiNetwork(): Network? = DashcamWifi.current(context)
 
     private fun guard(body: () -> Unit) {
         try { body() } catch (e: Throwable) {

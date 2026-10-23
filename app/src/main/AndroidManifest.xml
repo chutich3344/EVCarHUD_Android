@@ -9,6 +9,10 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Tự nối Wi‑Fi camera hành trình (DashcamScan.kt) -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <!-- Android Auto: app dẫn đường tự vẽ bản đồ (CarHud.kt) -->
     <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />

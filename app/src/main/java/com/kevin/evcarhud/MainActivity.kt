@@ -986,7 +986,7 @@ class Runner(private val ctx: Context) {
             CamKind.PHONE -> CameraSource(ctx) { run.alive }.also { if (gpuPreview) it.previewTexture = previewTexture }
             // Camera USB: đọc thẳng chuẩn UVC (webcam, module camera USB), không được mới thử Camera2 camera ngoài
             CamKind.USB -> UsbCamSource(ctx) { run.alive }.also { if (gpuPreview) it.previewTexture = previewTexture }
-            CamKind.WIFI -> NetStreamSource(ctx, streamUrl.trim()) { run.alive }
+            CamKind.WIFI -> { DashcamWifi.ensure(ctx); NetStreamSource(ctx, streamUrl.trim()) { run.alive } }
         }
     }
 
@@ -1353,8 +1353,106 @@ private fun SourcePicker(runner: Runner) {
                 label = { Text("Địa chỉ luồng", fontSize = 13.sp) },
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
             )
-            Desc("rtsp://… hoặc http://… (MJPEG). Nối Wi‑Fi của camera trước; máy báo \"không có Internet\" thì chọn vẫn giữ kết nối.", top = 6)
+            DashcamFinder(runner)
+            Desc("rtsp://… hoặc http://… (MJPEG). Bấm \"Tìm cam & dò luồng\": app tự nối Wi‑Fi cam (4G vẫn giữ cho bản đồ) và tự điền địa chỉ.", top = 6)
         }
+    }
+}
+
+// Nút tự tìm cam: chọn Wi‑Fi cam (mật khẩu mặc định 12345678) -> app tự nối -> dò IP / cổng / đường dẫn hay gặp
+@Composable
+private fun DashcamFinder(runner: Runner) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val prefs = remember { ctx.getSharedPreferences("evcarhud", Context.MODE_PRIVATE) }
+    var picking by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var ssids by remember { mutableStateOf(emptyList<String>()) }
+    var pass by remember { mutableStateOf(prefs.getString("camPass", DashcamWifi.DEFAULT_PASS) ?: DashcamWifi.DEFAULT_PASS) }
+    val main = remember { Handler(Looper.getMainLooper()) }
+
+    fun probe(net: android.net.Network?) {
+        val wasRunning = runner.running
+        if (wasRunning) runner.stop()   // cam thường chỉ cho 1 máy xem: dừng luồng đang chạy để dò
+        busy = true
+        scope.launch {
+            val url = withContext(Dispatchers.IO) {
+                if (wasRunning) delay(1500)
+                DashcamProbe.find(ctx, net, { true }) { m -> main.post { status = m } }
+            }
+            busy = false
+            if (url != null) {
+                runner.streamUrl = url
+                runner.savePrefs()
+                status = "Đã tìm thấy luồng: $url"
+                runner.startCamera()
+            } else {
+                status = "Không tìm thấy luồng nào. Cam có thể đã khoá luồng video, hoặc chưa nối đúng Wi‑Fi cam."
+                if (wasRunning) runner.startCamera()
+            }
+        }
+    }
+
+    Button(
+        onClick = {
+            ssids = DashcamWifi.nearby(ctx)
+            picking = true
+        },
+        enabled = !busy,
+        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C2C2E), contentColor = Color.White),
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+    ) { Text(if (busy) "Đang dò…" else "Tìm cam & dò luồng", fontSize = 15.sp) }
+    status?.let { Desc(it, top = 6) }
+
+    if (picking) {
+        AlertDialog(
+            onDismissRequest = { picking = false },
+            title = { Text("Chọn Wi‑Fi của camera") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = pass, onValueChange = { pass = it }, singleLine = true,
+                        label = { Text("Mật khẩu Wi‑Fi cam") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Column(Modifier.padding(top = 8.dp).heightIn(max = 300.dp).verticalScroll(rememberScrollState())) {
+                        Text(
+                            "Máy đã nối Wi‑Fi cam rồi, chỉ dò luồng",
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                picking = false
+                                status = "Đang dò luồng…"
+                                probe(DashcamWifi.current(ctx))
+                            }.padding(vertical = 12.dp)
+                        )
+                        if (ssids.isEmpty()) Text("Không thấy Wi‑Fi nào. Bật Wi‑Fi trên cam, bật vị trí của máy rồi thử lại.", fontSize = 14.sp)
+                        for (s in ssids) {
+                            Text(
+                                (if (DashcamWifi.looksLikeCam(s)) "📷 " else "") + s,
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    picking = false
+                                    busy = true
+                                    status = "Đang nối $s… (Android sẽ hỏi xác nhận)"
+                                    prefs.edit().putString("camSsid", s).putString("camPass", pass).apply()
+                                    DashcamWifi.connect(ctx, s, pass) { n ->
+                                        main.post {
+                                            if (n == null) {
+                                                busy = false
+                                                status = "Không nối được $s: sai mật khẩu hoặc đã huỷ."
+                                            } else {
+                                                status = "Đã nối $s, đang dò luồng…"
+                                                probe(n)
+                                            }
+                                        }
+                                    }
+                                }.padding(vertical = 12.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { picking = false }) { Text("Đóng") } }
+        )
     }
 }
 
