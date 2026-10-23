@@ -112,6 +112,8 @@ object HudRenderer {
     // Theo dõi "xe trước đã chạy"
     private var stopSince = -1L
     private var stopLeadD = 0f
+    private var lastLeadD = -100f
+    private var growSince = -1L
     private var movedFired = false
 
     // Gọi khi bắt đầu chạy video mới
@@ -218,6 +220,7 @@ object HudRenderer {
         strokeCap = Paint.Cap.SQUARE; strokeJoin = Paint.Join.MITER
     }
     private val bigText = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
+    private val bannerP = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
     private val smallText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.DEFAULT_BOLD; color = 0xFF9BE89B.toInt()
     }
@@ -1062,15 +1065,25 @@ object HudRenderer {
             }
         }
 
-        // Xe trước đã chạy: xe mình đứng yên sau một xe gần (< 15 m) hơn 2 s, xe đó đi xa thêm hơn 4 m
+        // Xe trước đã chạy: xe mình đứng yên sau một xe gần (< 15 m) hơn 3 s, xe đó lùi xa dần thêm hơn 3 m liên tục 1 s
+        // và model thấy nó đang chạy (> 1 m/s). Khoảng cách nhảy vọt (> 1,5 m trong một khung: mất xe / đổi sang xe khác,
+        // ví dụ xe máy chen giữa rồi chạy đi lúc đèn đỏ) thì lấy mốc mới, không tính là xe trước đã chạy.
         if (warnSpeedKmh < 3f) {
             if (hasLead && lx < 15f) {
-                if (stopSince < 0L) { stopSince = ptsUs; stopLeadD = lx; movedFired = false }
-                else {
-                    if (!movedFired && ptsUs - stopSince > 2_000_000L && lx - stopLeadD > 4f) { leadMovedFlag = true; movedFired = true }
-                    if (!movedFired) stopLeadD = minOf(stopLeadD, lx)
+                val vLead = o[LEAD + 2]
+                if (stopSince < 0L) { stopSince = ptsUs; stopLeadD = lx; lastLeadD = lx; growSince = -1L; movedFired = false }
+                else if (abs(lx - lastLeadD) > 1.5f) { stopLeadD = lx; growSince = -1L }
+                else if (!movedFired) {
+                    if (lx - stopLeadD > 3f && vLead > 1f) {
+                        if (growSince < 0L) growSince = ptsUs
+                        if (ptsUs - stopSince > 3_000_000L && ptsUs - growSince > 1_000_000L) { leadMovedFlag = true; movedFired = true }
+                    } else {
+                        growSince = -1L
+                        stopLeadD = minOf(stopLeadD, lx)
+                    }
                 }
-            }
+                lastLeadD = lx
+            } else lastLeadD = -100f          // mất xe trước: lần thấy lại sẽ lấy mốc mới
         } else stopSince = -1L
 
         // Hộp YOLO: chỉ đối tượng trong dải đường phía trước được tô màu trạng thái; xung quanh viền xanh dương mờ.
@@ -1155,6 +1168,20 @@ object HudRenderer {
         canvas.translate(w - 40f * k - 250f * k, 0f)
         TurnGuide.draw(canvas, k, turn, animSec)
         canvas.restore()
+        // Dòng báo dưới ô hướng rẽ: sự cố (cam), trạm thu phí (vàng), lối ra (xanh)
+        val bt = nav?.takeIf { it.active }?.bannerText.orEmpty()
+        if (bt.isNotEmpty()) {
+            bannerP.textSize = 24f * k
+            bannerP.color = when (nav?.bannerKind) {
+                HereNav.NOTE_INCIDENT -> 0xFFFF7043.toInt(); HereNav.NOTE_TOLL -> 0xFFFFC107.toInt(); else -> 0xFF90CAF9.toInt()
+            }
+            bannerP.setShadowLayer(5f * k, 0f, 0f, 0xCC000000.toInt())
+            var txt = bt
+            val maxW = 270f * k
+            while (txt.length > 4 && bannerP.measureText(txt) > maxW) txt = txt.dropLast(2)
+            if (txt != bt) txt = txt.trimEnd() + "…"
+            canvas.drawText(txt, w - 40f * k - 105f * k, 324f * k, bannerP)
+        }
         nav?.drawPanel(canvas, k, 40f * k, 176f * k, 340f * k, 384f * k, speedKmh)
         return level
     }

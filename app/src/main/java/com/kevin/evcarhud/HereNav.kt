@@ -47,9 +47,12 @@ class HereNav(private val gps: LocationFallback) {
 
     // sign: mã hướng rẽ kiểu GraphHopper (giữ như bản VietMap để dùng lại câu đọc và mã Waze cho TurnGuide)
     private class Step(val sign: Int, val exit: Int, val street: String, val start: Int)
+    // Điểm cần báo trên tuyến (lấy chung trong lượt gọi tính đường, không tốn thêm lượt): sự cố, trạm thu phí, biển chỉ lối ra
+    private class RNote(val at: Int, val kind: Int, val text: String, val say: String)
     private class Route(val lat: DoubleArray, val lon: DoubleArray, val cum: DoubleArray, val steps: List<Step>,
                         val totalM: Double, val totalS: Double,
-                        val spanAt: IntArray, val spanName: Array<String>, val spanKmh: IntArray)
+                        val spanAt: IntArray, val spanName: Array<String>, val spanKmh: IntArray,
+                        val notes: List<RNote> = emptyList())
 
     @Volatile var vehicle = "car"            // car / scooter (xe máy)
     @Volatile var showMini = true
@@ -65,6 +68,12 @@ class HereNav(private val gps: LocationFallback) {
         private set
     @Volatile var remainText = ""
         private set
+    // Dòng báo dưới ô hướng rẽ: sự cố / trạm thu phí / lối ra sắp tới ("" = không có). bannerKind: NOTE_*
+    @Volatile var bannerText = ""
+        private set
+    @Volatile var bannerKind = 0
+        private set
+    private val noteSaid = HashSet<Int>()
 
     private val exec = Executors.newSingleThreadExecutor()
     @Volatile private var route: Route? = null
@@ -136,13 +145,13 @@ class HereNav(private val gps: LocationFallback) {
 
     fun previewRoutes(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): List<RouteOpt> {
         opts = emptyList()
-        for (withSpans in listOf(true, false)) {
+        for (level in 2 downTo 0) {
             try {
                 val u = String.format(Locale.US,
-                    "%s?transportMode=%s&origin=%.6f,%.6f&destination=%.6f,%.6f&alternatives=2&return=polyline,summary,turnByTurnActions%s&lang=vi-VN",
-                    ROUTE, vehicle, fromLat, fromLon, toLat, toLon, if (withSpans) "&spans=names,maxSpeed" else "")
+                    "%s?transportMode=%s&origin=%.6f,%.6f&destination=%.6f,%.6f&alternatives=2%s&lang=vi-VN",
+                    ROUTE, vehicle, fromLat, fromLon, toLat, toLon, extras(level))
                 val (code, body) = get(u)
-                if (code == 400 && withSpans) continue
+                if (code == 400 && level > 0) continue
                 if (code != 200) { note = "Tính đường: ${httpNote(code)}"; return emptyList() }
                 val arr = JSONObject(body).optJSONArray("routes") ?: JSONArray()
                 val rs = ArrayList<Route>(); val out = ArrayList<RouteOpt>()
@@ -211,14 +220,14 @@ class HereNav(private val gps: LocationFallback) {
     }
     private fun fetchRoute(lat: Double, lon: Double, veh: String) {
         var err = ""
-        // Lần đầu xin cả tên đường + giới hạn tốc độ theo đoạn (spans); bị từ chối (HTTP 400) thì xin lại không có spans
-        for (withSpans in listOf(true, false)) {
+        // Lần đầu xin đủ (tên đường, giới hạn tốc độ, sự cố, phí); bị từ chối (HTTP 400) thì xin bớt dần
+        for (level in 2 downTo 0) {
             try {
                 val u = String.format(Locale.US,
-                    "%s?transportMode=%s&origin=%.6f,%.6f&destination=%.6f,%.6f&return=polyline,summary,turnByTurnActions%s&lang=vi-VN",
-                    ROUTE, veh, lat, lon, destLat, destLon, if (withSpans) "&spans=names,maxSpeed" else "")
+                    "%s?transportMode=%s&origin=%.6f,%.6f&destination=%.6f,%.6f%s&lang=vi-VN",
+                    ROUTE, veh, lat, lon, destLat, destLon, extras(level))
                 val (code, body) = get(u)
-                if (code == 400 && withSpans) { err = httpNote(code); continue }
+                if (code == 400 && level > 0) { err = httpNote(code); continue }
                 if (code != 200) { err = httpNote(code); break }
                 val o = JSONObject(body)
                 val secs = o.optJSONArray("routes")?.optJSONObject(0)?.optJSONArray("sections")
@@ -243,11 +252,19 @@ class HereNav(private val gps: LocationFallback) {
         note = "Tính đường: $err"
     }
 
+    // Phần thêm vào lượt gọi tính đường. 2: đủ (sự cố, trạm phí, số hiệu đường), 1: tên đường + tốc độ, 0: tối thiểu
+    private fun extras(level: Int): String = when (level) {
+        2 -> "&return=polyline,summary,turnByTurnActions,incidents,tolls&spans=names,maxSpeed,routeNumbers,incidents&currency=VND"
+        1 -> "&return=polyline,summary,turnByTurnActions&spans=names,maxSpeed"
+        else -> "&return=polyline,summary,turnByTurnActions"
+    }
+
     // Ghép các section (thường chỉ 1) thành một tuyến; offset của hướng rẽ / spans là chỉ số điểm trong polyline của section
     private fun parseRoute(secs: JSONArray): Route? {
         val la = ArrayList<Double>(); val lo = ArrayList<Double>()
         val steps = ArrayList<Step>()
         val spAt = ArrayList<Int>(); val spName = ArrayList<String>(); val spKmh = ArrayList<Int>()
+        val notes = ArrayList<RNote>()
         var timeS = 0.0
         var lastName = ""
         var lastKmh = 0
@@ -272,8 +289,17 @@ class HereNav(private val gps: LocationFallback) {
                     }
                     val sign = signOf(act, a.optString("direction", ""), a.optString("severity", ""))
                     steps.add(Step(sign, exit, roadOf(a.optJSONObject("nextRoad")), base + a.optInt("offset", 0)))
+                    // Biển chỉ lối ra trên cao tốc: số lối ra + hướng ghi trên biển
+                    val exNo = a.optJSONObject("exitSign")?.optJSONArray("number")?.let { firstName(it) }.orEmpty()
+                    val post = a.optJSONObject("signpost")?.let { anyValues(it, 2) }.orEmpty()
+                    if (exNo.isNotEmpty() || post.isNotEmpty()) {
+                        val t = listOf(if (exNo.isNotEmpty()) "Lối ra $exNo" else "", if (post.isNotEmpty()) "→ $post" else "")
+                            .filter { it.isNotEmpty() }.joinToString(" ")
+                        notes.add(RNote(base + a.optInt("offset", 0), NOTE_SIGN, t, ""))
+                    }
                 }
             }
+            val incAt = HashMap<Int, Int>()        // chỉ số sự cố trong section -> điểm đầu trên polyline
             sec.optJSONArray("spans")?.let { sp ->
                 for (i in 0 until sp.length()) {
                     val s = sp.optJSONObject(i) ?: continue
@@ -281,15 +307,64 @@ class HereNav(private val gps: LocationFallback) {
                     // đoạn không có dữ liệu hoặc "unlimited" -> 0
                     val ms = s.optDouble("maxSpeed", s.optDouble("speedLimit", Double.NaN))
                     val kmh = if (ms.isNaN() || ms <= 0.0) 0 else (ms * 3.6 / 5.0).roundToInt() * 5
-                    val nm = s.optJSONArray("names")?.let { firstName(it) } ?: ""
+                    s.optJSONArray("incidents")?.let { ii ->
+                        for (q in 0 until ii.length()) incAt.getOrPut(ii.optInt(q, -1)) { base + s.optInt("offset", 0) }
+                    }
+                    val nm0 = s.optJSONArray("names")?.let { firstName(it) } ?: ""
+                    val num = s.optJSONArray("routeNumbers")?.let { firstName(it) } ?: ""
+                    val nm = when { num.isEmpty() || nm0 == num -> nm0; nm0.isEmpty() -> num; else -> "$nm0 · $num" }
                     if (spAt.isNotEmpty() && nm == lastName && kmh == lastKmh) continue
                     spAt.add(base + s.optInt("offset", 0)); spName.add(nm); spKmh.add(kmh)
                     lastName = nm; lastKmh = kmh
                 }
             }
+            // Sự cố giao thông trên tuyến (tai nạn, công trình, đóng đường…), vị trí lấy theo spans
+            sec.optJSONArray("incidents")?.let { arr ->
+                for (q in 0 until arr.length()) {
+                    val inc = arr.optJSONObject(q) ?: continue
+                    val at = incAt[q] ?: continue
+                    if (inc.optString("criticality", "") == "low") continue
+                    val name = incidentName(inc.optString("type", ""))
+                    notes.add(RNote(at, NOTE_INCIDENT, "⚠ $name", name.replaceFirstChar { it.lowercase() }))
+                }
+            }
+            // Trạm thu phí: vị trí trạm chiếu lên tuyến, giá lấy theo VND nếu HERE quy đổi được
+            sec.optJSONArray("tolls")?.let { arr ->
+                for (q in 0 until arr.length()) {
+                    val tl = arr.optJSONObject(q) ?: continue
+                    val fare = tl.optJSONArray("fares")?.optJSONObject(0)
+                    val pr = fare?.optJSONObject("convertedPrice") ?: fare?.optJSONObject("price")
+                    val v = pr?.optDouble("value", Double.NaN) ?: Double.NaN
+                    val ccy = pr?.optString("currency", "").orEmpty()
+                    val price = when {
+                        v.isNaN() || v <= 0.0 -> ""
+                        ccy == "VND" || ccy.isEmpty() -> String.format(Locale("vi", "VN"), "%,d đ", v.roundToInt())
+                        else -> String.format(Locale.US, "%.2f %s", v, ccy)
+                    }
+                    val locs = tl.optJSONArray("tollCollectionLocations")
+                    val loc = locs?.optJSONObject(0)
+                    val pos = loc?.optJSONObject("location")
+                    val tLat = pos?.optDouble("lat", Double.NaN) ?: Double.NaN
+                    val tLon = pos?.optDouble("lng", Double.NaN) ?: Double.NaN
+                    if (tLat.isNaN() || tLon.isNaN()) continue
+                    var bi = base; var bd = Double.MAX_VALUE
+                    for (i in sLat.indices) {
+                        val d = meters(sLat[i], sLon[i], tLat, tLon)
+                        if (d < bd) { bd = d; bi = base + i }
+                    }
+                    if (bd > 300.0) continue
+                    val stn = loc?.optString("name", "")?.trim().orEmpty()
+                    val text = "Trạm thu phí" + (if (price.isNotEmpty()) " $price" else "")
+                    val say = "trạm thu phí" + (if (stn.isNotEmpty()) " $stn" else "") +
+                        (if (v > 0.0 && (ccy == "VND" || ccy.isEmpty())) ", ${sayMoney(v)}" else "")
+                    notes.add(RNote(bi, NOTE_TOLL, text, say))
+                }
+            }
         }
         val n = la.size
         if (n < 2) return null
+        notes.sortBy { it.at }
+        for (k in notes.indices) if (notes[k].at >= n) notes[k] = RNote(n - 1, notes[k].kind, notes[k].text, notes[k].say)
         val lat = la.toDoubleArray(); val lon = lo.toDoubleArray()
         val cum = DoubleArray(n)
         for (i in 1 until n) cum[i] = cum[i - 1] + meters(lat[i - 1], lon[i - 1], lat[i], lon[i])
@@ -301,7 +376,7 @@ class HereNav(private val gps: LocationFallback) {
             if (g != st.sign) steps[k] = Step(g, st.exit, st.street, st.start)
         }
         return Route(lat, lon, cum, steps, cum[n - 1], if (timeS > 0) timeS else cum[n - 1] / 8.0,
-            spAt.toIntArray(), spName.toTypedArray(), spKmh.toIntArray())
+            spAt.toIntArray(), spName.toTypedArray(), spKmh.toIntArray(), notes)
     }
 
     // ---------- Tên đường + giới hạn tốc độ tại vị trí hiện tại trên tuyến (luồng hiển thị) ----------
@@ -336,6 +411,43 @@ class HereNav(private val gps: LocationFallback) {
         return road.optJSONArray("number")?.let { firstName(it) } ?: ""
     }
 
+    // Gom tối đa `max` chuỗi "value" khác nhau trong một đối tượng JSON (biển chỉ dẫn có nhiều kiểu lồng nhau)
+    private fun anyValues(o: Any?, max: Int): String {
+        val out = LinkedHashSet<String>()
+        fun walk(v: Any?) {
+            if (out.size >= max) return
+            when (v) {
+                is JSONObject -> {
+                    val s = v.opt("value")
+                    if (s is String && s.isNotBlank()) out.add(s.trim())
+                    val keys = v.keys()
+                    while (keys.hasNext()) { val key = keys.next(); if (key != "value") walk(v.opt(key)) }
+                }
+                is JSONArray -> for (i in 0 until v.length()) walk(v.opt(i))
+            }
+        }
+        walk(o)
+        return out.joinToString(" / ")
+    }
+
+    private fun incidentName(type: String): String = when (type) {
+        "accident" -> "Tai nạn"
+        "construction" -> "Công trình"
+        "congestion" -> "Kẹt xe"
+        "disabledVehicle" -> "Xe hỏng"
+        "roadClosure" -> "Đóng đường"
+        "laneRestriction" -> "Hạn chế làn"
+        "plannedEvent" -> "Sự kiện"
+        "roadHazard" -> "Chướng ngại"
+        "weather" -> "Thời tiết xấu"
+        else -> "Sự cố"
+    }
+
+    private fun sayMoney(v: Double): String {
+        val n = v.roundToInt()
+        return if (n >= 1000 && n % 1000 == 0) "${n / 1000} nghìn đồng" else "$n đồng"
+    }
+
     // Hành động HERE (action + direction + severity) -> mã kiểu GraphHopper
     private fun signOf(action: String, dir: String, sev: String): Int {
         val left = dir == "left"
@@ -368,7 +480,7 @@ class HereNav(private val gps: LocationFallback) {
 
     // ---------- Bám tuyến (luồng hiển thị, mỗi khung) ----------
     fun update(speedKmh: Float) {
-        if (!active) { turn = null; return }
+        if (!active) { turn = null; bannerText = ""; return }
         val now = SystemClock.elapsedRealtime()
         if (now - lastUpd < UPDATE_MS) return
         lastUpd = now
@@ -385,7 +497,7 @@ class HereNav(private val gps: LocationFallback) {
             return
         }
         if (p == null) return
-        if (r !== cur) { cur = r; idx = -1; cueStep = -1; offSince = -1L }
+        if (r !== cur) { cur = r; idx = -1; cueStep = -1; offSince = -1L; noteSaid.clear() }
 
         // Chiếu vị trí GPS lên tuyến (đoạn gần nhất quanh vị trí cũ)
         val n = r.lat.size
@@ -426,6 +538,22 @@ class HereNav(private val gps: LocationFallback) {
         val remain = max(0.0, r.totalM - along)
         val remainS = r.totalS * remain / max(1.0, r.totalM)
         remainText = "${fmtKm(remain)} · ${max(1, (remainS / 60).roundToInt())} phút"
+
+        // Sự cố / trạm phí / lối ra sắp tới: hiện dòng báo, đọc một lần
+        var bt0 = ""; var bk = 0
+        for ((i, nt) in r.notes.withIndex()) {
+            val d = r.cum[nt.at] - along
+            if (d < -20.0) continue
+            val win = when (nt.kind) { NOTE_TOLL -> 2000.0; else -> 1500.0 }
+            if (d > win) break
+            if (bt0.isEmpty()) { bt0 = "${nt.text} · ${fmtKm(max(0.0, d))}"; bk = nt.kind }
+            val sayAt = if (speedKmh > 60f) 1000.0 else 500.0
+            if (nt.say.isNotEmpty() && d in 30.0..sayAt && i !in noteSaid && cue == null) {
+                noteSaid.add(i)
+                cue = Cue("Phía trước ${sayDist(d)} có ${nt.say}", false)
+            }
+        }
+        bannerText = bt0; bannerKind = bk
 
         // Đến nơi
         if (remain < ARRIVE_M) {
@@ -901,6 +1029,9 @@ class HereNav(private val gps: LocationFallback) {
         const val OFF_M = 45.0
         const val OFF_MS = 5000L
         const val REROUTE_GAP_MS = 30_000L
+        const val NOTE_INCIDENT = 1
+        const val NOTE_TOLL = 2
+        const val NOTE_SIGN = 3
         const val MAX_REROUTES = 60
         const val RETRY_MS = 15_000L
         const val MAX_FAILS = 3
