@@ -13,6 +13,9 @@
     <!-- Android Auto: app dẫn đường tự vẽ bản đồ (CarHud.kt) -->
     <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
     <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
     <queries>
         <intent><action android:name="com.wazemod.api.action.REQUEST_ACCESS" /></intent>
@@ -66,6 +69,11 @@
                 <category android:name="androidx.car.app.category.NAVIGATION" />
             </intent-filter>
         </service>
+        <!-- Giữ camera + GPS chạy khi đang dùng trên xe (màn hình điện thoại tắt) -->
+        <service
+            android:name=".HudFgService"
+            android:exported="false"
+            android:foregroundServiceType="camera|location" />
         <!-- Đọc bài đang phát (YouTube Music, Spotify...) cho thẻ nhạc trên xe -->
         <service
             android:name=".MediaWatch"

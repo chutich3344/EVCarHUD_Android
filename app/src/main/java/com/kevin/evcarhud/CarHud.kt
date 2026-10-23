@@ -1,6 +1,16 @@
 package com.kevin.evcarhud
 
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
 import android.content.ComponentName
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.IBinder
+import androidx.core.content.ContextCompat
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -107,6 +117,24 @@ object MediaNow {
     fun next(ctx: Context) { current(ctx)?.transportControls?.skipToNext() }
 }
 
+// Giữ camera + GPS chạy khi màn hình điện thoại tắt (lên xe không cần mở app trên điện thoại)
+class HudFgService : Service() {
+    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel("car", "EVCarHUD trên xe", NotificationManager.IMPORTANCE_LOW))
+        val n = Notification.Builder(this, "car").setSmallIcon(R.drawable.car_play)
+            .setContentTitle("EVCarHUD đang chạy trên Android Auto").setOngoing(true).build()
+        val type = if (Build.VERSION.SDK_INT >= 30)
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        else ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        try { startForeground(7, n, type) } catch (_: Throwable) {
+            try { startForeground(7, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION) } catch (_: Throwable) { stopSelf() }
+        }
+        return START_NOT_STICKY
+    }
+}
+
 class HudCarService : CarAppService() {
     // Bản thử cài ngoài: nhận mọi host (Android Auto). Phát hành chính thức thì dùng danh sách host của Google
     override fun createHostValidator(): HostValidator = HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
@@ -119,16 +147,32 @@ class HudSession : Session() {
 
 class HudScreen(ctx: CarContext) : Screen(ctx) {
     private val surf = HudSurface(ctx)
+    private var startedCam = false
+
+    // Mở app trên xe: tự bật camera + AI (không cần mở trên điện thoại); rút kết nối xe thì tắt cho đỡ nóng máy
+    private fun autoStart() {
+        val app = carContext.applicationContext
+        try { ContextCompat.startForegroundService(app, Intent(app, HudFgService::class.java)) } catch (_: Throwable) {}
+        val r = RunnerHolder.get(app)
+        r.gps.start()
+        if (!r.running && ContextCompat.checkSelfPermission(app, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            r.startCamera(); startedCam = true
+        }
+    }
+    private fun autoStop() {
+        val app = carContext.applicationContext
+        if (startedCam) { RunnerHolder.get(app).stop(); startedCam = false }
+        try { app.stopService(Intent(app, HudFgService::class.java)) } catch (_: Throwable) {}
+    }
 
     init {
-        // Xe mở app khi điện thoại chưa mở EVCarHUD: tạo Runner để có GPS + bản đồ
-        RunnerHolder.get(ctx.applicationContext).gps.start()
+        autoStart()
         ctx.getCarService(AppManager::class.java).setSurfaceCallback(surf)
         surf.onMediaTap = { invalidate() }
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) { surf.start() }
             override fun onStop(owner: LifecycleOwner) { surf.stop() }
-            override fun onDestroy(owner: LifecycleOwner) { surf.quit() }
+            override fun onDestroy(owner: LifecycleOwner) { surf.quit(); autoStop() }
         })
     }
 
@@ -353,7 +397,7 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
         val pic = CarLink.pic
         if (pic == null || !fresh()) {
             mutP.textSize = 18f * k
-            c.drawText("Mở EVCarHUD trên điện thoại và chạy camera", r.left + 16f * k, r.centerY(), mutP)
+            c.drawText("Đang mở camera…", r.left + 16f * k, r.centerY(), mutP)
             c.restore(); return
         }
         val pw = 1024f; val ph = CarLink.picH.toFloat()
