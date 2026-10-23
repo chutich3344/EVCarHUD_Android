@@ -242,7 +242,9 @@ object HudRenderer {
     // ---- Làn vàng AR khi sắp rẽ (giống trang giả lập ar_lane) ----
     private const val AR_RANGE_M = 150
     private val arFill = fillP(0xFFFFC107)
-    private val arEdge = stroke(0xE6FFD54F)
+    private val arEdge = stroke(0xFFFFE066)
+    private val arGlow = stroke(0x40FFD54F)
+    private val arDot = fillP(0x80FFE066)
     private val arChev = fillP(0xF2FFFFFF)
 
     // Tuyến trên mặt đường (lat: ngang, phải dương; fwd: phía trước, m): thẳng tới chỗ rẽ rồi cong. null = không vẽ (đi thẳng, vòng xuyến, tới nơi)
@@ -307,16 +309,40 @@ object HudRenderer {
         for (q in r) { top = min(top, q.y); bot = max(bot, q.y) }
         if (bot - top < 1f) bot = top + 1f
         arFill.shader = LinearGradient(0f, bot, 0f, top,
-            intArrayOf(0x9EFFC107.toInt(), 0x61FFC107, 0x26FFC107), floatArrayOf(0f, 0.7f, 1f), Shader.TileMode.CLAMP)
+            intArrayOf(0x57FFC107, 0x2EFFC107, 0x0FFFC107), floatArrayOf(0f, 0.7f, 1f), Shader.TileMode.CLAMP)
         polygon(canvas, l, r, arFill)
-        arEdge.strokeWidth = 2.5f * k
-        canvas.drawPath(pathOf(l), arEdge)
-        canvas.drawPath(pathOf(r), arEdge)
+        // Viền sáng: lớp quầng rộng mờ + nét đậm
+        val el = pathOf(l); val er = pathOf(r)
+        arGlow.strokeWidth = 12f * k; arEdge.strokeWidth = 4f * k
+        arGlow.strokeJoin = Paint.Join.ROUND; arEdge.strokeJoin = Paint.Join.ROUND
+        canvas.drawPath(el, arGlow); canvas.drawPath(er, arGlow)
+        canvas.drawPath(el, arEdge); canvas.drawPath(er, arEdge)
 
         // Mũi tên (chevron) trắng trên mặt đường, chạy dọc tuyến 9 m/s, cách nhau 6 m
         val cum = FloatArray(p.size)
         for (i in 1 until p.size) cum[i] = cum[i - 1] + kotlin.math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1])
         val tot = cum[p.size - 1]
+        // Lưới chấm trên mặt làn (mỗi 0,7 m dọc, 0,3 m ngang, tới 60 m)
+        var di = 1
+        var d = 0f
+        while (d < min(tot, dist + 40f)) {
+            while (di < p.size - 1 && cum[di] < d) di++
+            val a = p[di - 1]; val b = p[di]
+            val seg = (cum[di] - cum[di - 1]).takeIf { it > 0f } ?: 1f
+            val f = (d - cum[di - 1]) / seg
+            val x = a[0] + (b[0] - a[0]) * f; val z = a[1] + (b[1] - a[1]) * f
+            val dx = (b[0] - a[0]) / seg; val dz = (b[1] - a[1]) / seg
+            d += 0.7f
+            if (z < 3.3f || z > 60f) continue
+            val rad = cam.f * 0.022f / z * cam.scale
+            if (rad < 0.5f) continue
+            var o = -1.35f
+            while (o <= 1.36f) {
+                val q = pr(x + dz * o, z - dx * o)
+                if (q != null) canvas.drawCircle(q.x, q.y, rad, arDot)
+                o += 0.3f
+            }
+        }
         val sp = 6f
         var s = (animSec * 9f) % sp
         var i = 1
