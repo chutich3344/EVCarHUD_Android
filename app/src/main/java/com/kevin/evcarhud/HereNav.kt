@@ -20,6 +20,7 @@ import java.net.URLEncoder
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.floor
 import kotlin.math.hypot
@@ -293,6 +294,12 @@ class HereNav(private val gps: LocationFallback) {
         val cum = DoubleArray(n)
         for (i in 1 until n) cum[i] = cum[i - 1] + meters(lat[i - 1], lon[i - 1], lat[i], lon[i])
         for (k in steps.indices) if (steps[k].start >= n) steps[k] = Step(steps[k].sign, steps[k].exit, steps[k].street, n - 1)
+        // Ô hướng rẽ + câu đọc phải khớp đường vẽ trên bản đồ: chỉnh độ gắt / phía rẽ theo góc thật của tuyến tại chỗ rẽ
+        for (k in steps.indices) {
+            val st = steps[k]
+            val g = geoSign(lat, lon, cum, st.start, st.sign)
+            if (g != st.sign) steps[k] = Step(g, st.exit, st.street, st.start)
+        }
         return Route(lat, lon, cum, steps, cum[n - 1], if (timeS > 0) timeS else cum[n - 1] / 8.0,
             spAt.toIntArray(), spName.toTypedArray(), spKmh.toIntArray())
     }
@@ -834,6 +841,34 @@ class HereNav(private val gps: LocationFallback) {
         6 -> if (exit > 0) "vào vòng xuyến, ra lối thứ $exit" else "vào vòng xuyến"
         4 -> "đến nơi"
         else -> "đi thẳng"
+    }
+
+    // Góc rẽ thật của tuyến: hướng 30 m trước chỗ rẽ so với 40 m sau (dương = rẽ phải). Chỉ chỉnh rẽ / giữ làn;
+    // vòng xuyến, quay đầu, đến nơi giữ nguyên theo HERE
+    private fun geoSign(lat: DoubleArray, lon: DoubleArray, cum: DoubleArray, at: Int, sign: Int): Int {
+        if (sign == 0 || (sign !in -3..3 && sign != 7 && sign != -7)) return sign
+        val n = lat.size
+        if (at <= 0 || at >= n - 1) return sign
+        var a = at
+        while (a > 0 && cum[at] - cum[a] < 30.0) a--
+        var b = at
+        while (b < n - 1 && cum[b] - cum[at] < 40.0) b++
+        if (a == at || b == at) return sign
+        fun brg(i: Int, j: Int): Double {
+            val dx = (lon[j] - lon[i]) * cos(Math.toRadians(lat[i]))
+            val dy = lat[j] - lat[i]
+            return Math.toDegrees(atan2(dx, dy))
+        }
+        var d = brg(at, b) - brg(a, at)
+        while (d > 180.0) d -= 360.0
+        while (d < -180.0) d += 360.0
+        val ad = abs(d)
+        val side = if (d > 0) 1 else -1
+        return when {
+            ad < 15.0 -> sign                                   // gần như thẳng: giữ theo HERE
+            sign == 7 || sign == -7 -> if (ad >= 50.0) side * (if (ad < 120.0) 2 else 3) else side * 7
+            else -> side * when { ad < 40.0 -> 1; ad < 120.0 -> 2; else -> 3 }
+        }
     }
 
     // Mã hướng rẽ kiểu GraphHopper -> mã Waze mà TurnGuide đang vẽ
