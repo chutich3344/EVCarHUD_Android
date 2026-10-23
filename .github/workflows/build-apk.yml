@@ -5,7 +5,7 @@ name: Build APK
 
 on:
   push:
-    branches: [main, claude/hud-layout, claude/project-thread-uxds1h]
+    branches: [main, claude/hud-layout, claude/project-thread-uxds1h, claude/project-thread-mx3u0m]
   workflow_dispatch:
 
 permissions:
@@ -40,6 +40,8 @@ jobs:
           # Bản gọi HERE qua Worker đăng riêng ở Release "apk-worker" cho tới khi Worker chạy ổn
           TAG=apk; TITLE="APK mới nhất"
           if [ "$GITHUB_REF_NAME" = "claude/project-thread-uxds1h" ]; then TAG=apk-worker; TITLE="APK thử máy chủ Worker"; fi
+          # Bản thử màn hình Android Auto
+          if [ "$GITHUB_REF_NAME" = "claude/project-thread-mx3u0m" ]; then TAG=apk-auto; TITLE="APK thử Android Auto"; fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "$NOTE"
           else

@@ -317,6 +317,8 @@ class Runner(private val ctx: Context) {
         nav.showMini = miniMap
         HudRenderer.camH = camH
         HudRenderer.reflect = reflect
+        CarLink.nav = nav
+        CarLink.gps = gps
         // Kiểu chữ HUD tuỳ chọn: đặt file assets/fonts/hud.ttf (ví dụ Exo 2 ExtraLight) để thay Roboto Thin
         try { HudRenderer.setFont(android.graphics.Typeface.createFromAsset(ctx.assets, "fonts/hud.ttf")) } catch (_: Throwable) {}
         // Chữ đậm cho số khoảng cách ở giữa: assets/fonts/hud_bold.ttf (ví dụ Exo 2 Bold), không có thì Roboto Bold
@@ -810,6 +812,7 @@ class Runner(private val ctx: Context) {
                     perfText, perfCpu >= 70f)
                 pk.endRecording()
                 pic = pk
+                CarLink.feed(pk, job.bmp, spd, limitNow, if (nav.active) nav.turn else null, street)
                 if (r.yoloMs >= 0) lastYoloMs = r.yoloMs
                 logSpd = spd
                 logWarn = maxOf(spd, r.speedKmh)
@@ -1414,6 +1417,11 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             RowLine(); NavRow("Chỉ đường",
                 desc = if (runner.nav.active) "Đang dẫn đường tới ${runner.nav.destName}" else "Tìm điểm đến, mũi tên rẽ và bản đồ nhỏ trên HUD",
                 onClick = onNav)
+            RowLine()
+            val ctx = LocalContext.current
+            NavRow("Nhạc trên Android Auto", value = if (MediaNow.granted(ctx)) "Đã cho phép" else "Chưa cho phép",
+                desc = "Cho EVCarHUD đọc bài đang phát (YouTube Music, Spotify...) để hiện trên màn hình xe. Bấm để mở Truy cập thông báo.",
+                onClick = { ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
             RowLine(); SwitchRow("Bản đồ nhỏ", "Tuyến đường dưới đồng hồ tốc độ khi đang chỉ đường, kèm quãng đường và thời gian còn lại.", runner.miniMap) {
                 runner.miniMap = it; runner.savePrefs()
             }
@@ -1658,7 +1666,7 @@ private fun BoxScope.NavPanel(runner: Runner, land: Boolean, onClose: () -> Unit
 }
 
 // Giữ Runner sống qua lần xoay màn hình (Activity bị tạo lại, video vẫn đang chạy)
-private object RunnerHolder {
+internal object RunnerHolder {
     private var runner: Runner? = null
     fun get(ctx: Context): Runner = runner ?: Runner(ctx).also { runner = it }
 }

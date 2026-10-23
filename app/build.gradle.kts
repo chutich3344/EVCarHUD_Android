@@ -64,6 +64,8 @@ dependencies {
     // Trang Bản đồ: bản đồ vector + nhà 3D (ô vector HERE qua Worker)
     implementation("org.maplibre.gl:android-sdk:11.8.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Màn hình trên Android Auto (ô Android Auto của xe)
+    implementation("androidx.car.app:app:1.4.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
