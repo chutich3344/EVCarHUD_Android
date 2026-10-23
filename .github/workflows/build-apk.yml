@@ -18,6 +18,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      HAS_PLAY_KEY: ${{ secrets.PLAY_KEY_PASS != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,3 +50,22 @@ jobs:
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --notes "$NOTE" --prerelease
           fi
           gh release upload "$TAG" EVCarHUD.apk --repo "$GITHUB_REPOSITORY" --clobber
+
+      # Bản cho Google Play (thử nghiệm nội bộ): chỉ chạy khi đã thêm secret PLAY_KEYSTORE_B64 và PLAY_KEY_PASS
+      - name: Build AAB cho Google Play
+        env:
+          PLAY_KEYSTORE_B64: ${{ secrets.PLAY_KEYSTORE_B64 }}
+          PLAY_KEY_PASS: ${{ secrets.PLAY_KEY_PASS }}
+          GH_TOKEN: ${{ github.token }}
+        if: env.HAS_PLAY_KEY == 'true'
+        run: |
+          echo "$PLAY_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          export PLAY_KEYSTORE="$RUNNER_TEMP/upload.jks"
+          ./gradlew bundleRelease --no-daemon --stacktrace
+          cp app/build/outputs/bundle/release/app-release.aab EVCarHUD.aab
+          TAG=aab
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "AAB cho Google Play" --notes "Tải lên Play Console" --prerelease
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "Bản ${GITHUB_RUN_NUMBER} từ nhánh ${GITHUB_REF_NAME}, commit ${GITHUB_SHA::7}"
+          gh release upload "$TAG" EVCarHUD.aab --repo "$GITHUB_REPOSITORY" --clobber

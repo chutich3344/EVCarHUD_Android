@@ -13,8 +13,9 @@ android {
         applicationId = "com.kevin.evcarhud"
         minSdk = 29
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        // Mỗi lần build trên GitHub tăng số phiên bản (Play Store bắt buộc versionCode mới cho mỗi lần tải lên)
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionName = "1.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -28,12 +29,23 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        // Khoá tải lên Play Store: chỉ có khi CI có secret PLAY_KEYSTORE_B64 / PLAY_KEY_PASS (không để trong repo công khai)
+        if (System.getenv("PLAY_KEY_PASS") != null) {
+            create("upload") {
+                storeFile = file(System.getenv("PLAY_KEYSTORE") ?: "upload.jks")
+                storePassword = System.getenv("PLAY_KEY_PASS")
+                keyAlias = "upload"
+                keyPassword = System.getenv("PLAY_KEY_PASS")
+            }
+        }
     }
 
     buildTypes {
         release {
+            if (System.getenv("PLAY_KEY_PASS") != null) signingConfig = signingConfigs.getByName("upload")
             optimization {
-                enable = true
+                // Tạm tắt rút gọn mã cho bản Play thử nghiệm (ONNX Runtime, MapLibre, Car App dùng reflection)
+                enable = false
                 packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
             }
         }
