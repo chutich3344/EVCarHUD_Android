@@ -17,7 +17,10 @@ import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetSocketAddress
+import java.net.SocketTimeoutException
 import java.net.Socket
 import java.net.URI
 import java.nio.ByteBuffer
@@ -59,23 +62,27 @@ class NetStreamSource(
         if (scheme != "rtsp" && scheme != "http") throw IllegalStateException("Chỉ hỗ trợ rtsp:// hoặc http:// (MJPEG)")
         val host = u.host ?: throw IllegalStateException("Thiếu địa chỉ IP camera trong $url")
         val port = if (u.port > 0) u.port else if (scheme == "rtsp") 554 else 80
-        val s = Socket()
-        wifiNetwork()?.let { try { it.bindSocket(s) } catch (e: Throwable) { Log.w(NTAG, "không gắn được vào Wi‑Fi", e) } }
-        try {
-            s.connect(InetSocketAddress(host, port), CONNECT_MS)
-        } catch (e: Throwable) {
-            try { s.close() } catch (_: Throwable) {}
-            throw IllegalStateException("Không kết nối được $host:$port (đã nối Wi‑Fi của camera chưa?)")
-        }
-        s.soTimeout = READ_MS
-        s.tcpNoDelay = true
-        socket = s
-        val input = BufferedInputStream(s.getInputStream(), 64 * 1024)
-        val out = s.getOutputStream()
+        var s = connect(host, port)
+        var input = BufferedInputStream(s.getInputStream(), 64 * 1024)
+        var out = s.getOutputStream()
         if (scheme == "rtsp") {
-            val rtsp = Rtsp(u, input, out)
-            rtsp.handshake()   // lỗi đăng nhập / sai đường dẫn báo ngay khi mở
-            reader = Thread({ guard { rtsp.stream() } }, "rtsp-src").also { it.start() }
+            var rtsp = Rtsp(u, input, out, udp = false)
+            try {
+                rtsp.handshake()   // lỗi đăng nhập / sai đường dẫn báo ngay khi mở
+            } catch (e: SetupFailed) {
+                // Nhiều cam (SigmaStar, 70mai…) chỉ phát RTP qua UDP: mở kết nối mới, xin lại bằng UDP
+                Log.w(NTAG, "RTP qua TCP không được (${e.message}), thử UDP")
+                try { rtsp.close() } catch (_: Throwable) {}
+                try { s.close() } catch (_: Throwable) {}
+                s = connect(host, port)
+                input = BufferedInputStream(s.getInputStream(), 64 * 1024)
+                out = s.getOutputStream()
+                rtsp = Rtsp(u, input, out, udp = true)
+                try { rtsp.handshake() } catch (e2: SetupFailed) { rtsp.close(); throw IllegalStateException("Camera không nhận lệnh SETUP (cả TCP lẫn UDP)") }
+            }
+            val r = rtsp
+            udpClose = { r.close() }
+            reader = Thread({ guard { r.stream() } }, "rtsp-src").also { it.start() }
         } else {
             val path = (u.rawPath ?: "/").ifEmpty { "/" } + (u.rawQuery?.let { "?$it" } ?: "")
             out.write("GET $path HTTP/1.1\r\nHost: $host\r\nConnection: keep-alive\r\n\r\n".toByteArray())
@@ -88,6 +95,24 @@ class NetStreamSource(
     }
 
     // Ưu tiên Wi‑Fi cam do app tự nối (DashcamScan.kt), không có thì Wi‑Fi máy đang nối
+    private fun connect(host: String, port: Int): Socket {
+        val s = Socket()
+        wifiNetwork()?.let { try { it.bindSocket(s) } catch (e: Throwable) { Log.w(NTAG, "không gắn được vào Wi‑Fi", e) } }
+        try {
+            s.connect(InetSocketAddress(host, port), CONNECT_MS)
+        } catch (e: Throwable) {
+            try { s.close() } catch (_: Throwable) {}
+            throw IllegalStateException("Không kết nối được $host:$port (đã nối Wi‑Fi của camera chưa?)")
+        }
+        s.soTimeout = READ_MS
+        s.tcpNoDelay = true
+        socket = s
+        return s
+    }
+
+    private class SetupFailed(msg: String) : Exception(msg)
+    @Volatile private var udpClose: (() -> Unit)? = null
+
     private fun wifiNetwork(): Network? = DashcamWifi.current(context)
 
     private fun guard(body: () -> Unit) {
@@ -128,6 +153,7 @@ class NetStreamSource(
         closed = true
         synchronized(lock) { lock.notifyAll() }
         try { socket?.close() } catch (_: Throwable) {}
+        try { udpClose?.invoke() } catch (_: Throwable) {}
         try { reader?.join(2000) } catch (_: Throwable) {}
         try { codec?.stop() } catch (_: Throwable) {}
         try { codec?.release() } catch (_: Throwable) {}
@@ -200,7 +226,10 @@ class NetStreamSource(
 
     // ---------------- RTSP ----------------
 
-    private inner class Rtsp(private val u: URI, private val input: BufferedInputStream, private val out: OutputStream) {
+    private inner class Rtsp(private val u: URI, private val input: BufferedInputStream, private val out: OutputStream,
+                             private val udp: Boolean) {
+        private var rtpSock: DatagramSocket? = null
+        private var rtcpSock: DatagramSocket? = null
         private val base = URI(u.scheme, null, u.host, u.port, u.path, u.query, null).toString()
         private val user = u.userInfo?.substringBefore(':')
         private val pass = u.userInfo?.substringAfter(':', "")
@@ -214,15 +243,26 @@ class NetStreamSource(
 
         private inner class Resp(val code: Int, val headers: Map<String, String>, val body: String)
 
+        fun close() {
+            try { rtpSock?.close() } catch (_: Throwable) {}
+            try { rtcpSock?.close() } catch (_: Throwable) {}
+        }
+
         private fun request(method: String, uri: String, extra: String = ""): Resp {
-            var r = send(method, uri, extra)
+            var r = try { send(method, uri, extra) } catch (e: SocketTimeoutException) {
+                if (method == "SETUP") throw SetupFailed("không trả lời")
+                throw IllegalStateException("Camera không trả lời lệnh $method (luồng có thể bị khoá hoặc sai đường dẫn)")
+            }
             if (r.code == 401 && user != null && authHeader == null) {
                 val wa = r.headers["www-authenticate"] ?: throw IllegalStateException("Camera đòi đăng nhập")
                 authHeader = makeAuth(wa)
                 r = send(method, uri, extra)
             }
             if (r.code == 401) throw IllegalStateException("Sai tài khoản/mật khẩu camera (thêm rtsp://user:pass@… vào địa chỉ)")
-            if (r.code != 200) throw IllegalStateException("$method lỗi ${r.code}")
+            if (r.code != 200) {
+                if (method == "SETUP" && !udp) throw SetupFailed("mã ${r.code}")
+                throw IllegalStateException("$method lỗi ${r.code}")
+            }
             return r
         }
 
@@ -329,12 +369,65 @@ class NetStreamSource(
                 ctl.startsWith("rtsp://", ignoreCase = true) -> ctl
                 else -> contentBase.trimEnd('/') + "/" + ctl
             }
-            val s = request("SETUP", track, "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n")
+            val transport = if (udp) {
+                openUdp()
+                "Transport: RTP/AVP;unicast;client_port=${rtpSock!!.localPort}-${rtpSock!!.localPort + 1}\r\n"
+            } else "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n"
+            val s = request("SETUP", track, transport)
             val sh = s.headers["session"] ?: throw IllegalStateException("Camera không trả Session")
             session = sh.substringBefore(';').trim()
             Regex("timeout=(\\d+)").find(sh)?.groupValues?.get(1)?.toIntOrNull()?.let { timeoutS = it.coerceIn(10, 120) }
             request("PLAY", contentBase, "Range: npt=0.000-\r\n")
-            Log.d(NTAG, "RTSP ${if (h265) "H.265" else "H.264"} pt=$pt track=$track")
+            Log.d(NTAG, "RTSP ${if (h265) "H.265" else "H.264"} pt=$pt track=$track ${if (udp) "UDP" else "TCP"}")
+        }
+
+        // Cặp cổng UDP chẵn/lẻ cho RTP/RTCP, gắn vào Wi‑Fi cam
+        private fun openUdp() {
+            val net = wifiNetwork()
+            repeat(10) {
+                val a = DatagramSocket(null)
+                try {
+                    a.reuseAddress = true
+                    a.bind(InetSocketAddress(0))
+                    if (a.localPort % 2 != 0) { a.close(); return@repeat }
+                    val b = DatagramSocket(null)
+                    try { b.bind(InetSocketAddress(a.localPort + 1)) } catch (_: Throwable) { b.close(); a.close(); return@repeat }
+                    net?.let { n -> try { n.bindSocket(a); n.bindSocket(b) } catch (e: Throwable) { Log.w(NTAG, "UDP không gắn được Wi‑Fi", e) } }
+                    a.receiveBufferSize = 1 shl 20
+                    a.soTimeout = READ_MS
+                    rtpSock = a; rtcpSock = b
+                    return
+                } catch (e: Throwable) { try { a.close() } catch (_: Throwable) {} }
+            }
+            val a = DatagramSocket()
+            net?.let { n -> try { n.bindSocket(a) } catch (_: Throwable) {} }
+            a.receiveBufferSize = 1 shl 20
+            a.soTimeout = READ_MS
+            rtpSock = a
+        }
+
+        // Nhận RTP qua UDP; kết nối RTSP chỉ để giữ phiên
+        private fun streamUdp() {
+            val sock = rtpSock ?: throw IllegalStateException("Thiếu cổng UDP")
+            val buf = ByteArray(65536)
+            val dp = DatagramPacket(buf, buf.size)
+            var lastKeep = System.currentTimeMillis()
+            while (live()) {
+                val now = System.currentTimeMillis()
+                if (now - lastKeep > timeoutS * 500L) {
+                    lastKeep = now
+                    val sb = "GET_PARAMETER $base RTSP/1.0\r\nCSeq: ${++cseq}\r\nSession: $session\r\n" +
+                            (authHeader?.let { "Authorization: ${it("GET_PARAMETER", base)}\r\n" } ?: "") + "\r\n"
+                    out.write(sb.toByteArray()); out.flush()
+                    // đọc bỏ trả lời giữ phiên cho khỏi đầy bộ đệm
+                    try { while (input.available() > 0) input.skip(input.available().toLong()) } catch (_: Throwable) {}
+                }
+                dp.setLength(buf.size)
+                sock.receive(dp)
+                if (dp.length < 12) continue
+                onRtp(buf, dp.length)
+                drain()
+            }
         }
 
         private fun addParam(b64: String) {
@@ -376,6 +469,7 @@ class NetStreamSource(
         fun stream() {
             for (p in params) onNal(p)   // SPS/PPS từ SDP (nếu có)
             au.reset(); auKey = false
+            if (udp) { streamUdp(); return }
             var lastKeep = System.currentTimeMillis()
             val hdr = ByteArray(3)
             var pkt = ByteArray(65536)
