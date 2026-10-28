@@ -22,7 +22,7 @@ jobs:
 
       - name: Cài thư viện
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install onnx onnxsim onnxruntime loguru tabulate thop psutil opencv-python-headless
           git clone https://github.com/Megvii-BaseDetection/YOLOX.git yoloxsrc
           git -C yoloxsrc checkout 6ddff4824372906469a7fae2dc3206c7aa4bbaee
