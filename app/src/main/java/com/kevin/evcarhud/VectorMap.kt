@@ -88,12 +88,12 @@ object VectorMap {
    "paint": {"fill-extrusion-color": "#2b3f55", "fill-extrusion-opacity": 0.85,
     "fill-extrusion-height": ["coalesce", ["get", "render_height"], 8]}},
   {"id": "road-labels", "type": "symbol", "source": "osm", "source-layer": "transportation_name", "minzoom": 13,
-   "layout": {"symbol-placement": "line", "text-field": ["coalesce", ["get", "name:vi"], ["get", "name"]], "text-font": ["Inter-Medium"],
+   "layout": {"symbol-placement": "line", "text-field": ["coalesce", ["get", "name:vi"], ["get", "name:latin"]], "text-font": ["Inter-Medium"],
     "text-size": ["interpolate", ["linear"], ["zoom"], 13, 11, 17, 15], "text-max-angle": 30, "text-padding": 4},
    "paint": {"text-color": "#d6e4ef", "text-halo-color": "#0a1620", "text-halo-width": 1.5}},
   {"id": "places", "type": "symbol", "source": "osm", "source-layer": "place", "minzoom": 10,
    "filter": ["match", ["get", "class"], ["city", "town", "suburb", "quarter", "neighbourhood"], true, false],
-   "layout": {"text-field": ["coalesce", ["get", "name:vi"], ["get", "name"]], "text-font": ["Inter-Medium"],
+   "layout": {"text-field": ["coalesce", ["get", "name:vi"], ["get", "name:latin"]], "text-font": ["Inter-Medium"],
     "text-size": ["match", ["get", "class"], "city", 15, "town", 14, 12], "text-max-width": 8},
    "paint": {"text-color": "#9fb6c8", "text-halo-color": "#0a1620", "text-halo-width": 1.5}}
  ]
