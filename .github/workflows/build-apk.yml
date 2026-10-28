@@ -5,7 +5,7 @@ name: Build APK
 
 on:
   push:
-    branches: [main, claude/hud-layout, claude/project-thread-uxds1h, claude/project-thread-mx3u0m, claude/project-thread-jr7s5f, claude/project-thread-9eiayp, claude/project-thread-kpdvqf]
+    branches: [main, claude/hud-layout, claude/project-thread-uxds1h, claude/project-thread-mx3u0m, claude/project-thread-jr7s5f, claude/project-thread-9eiayp, claude/project-thread-kpdvqf, claude/project-thread-8euyc5]
   workflow_dispatch:
 
 permissions:

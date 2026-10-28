@@ -433,7 +433,7 @@ class Runner(private val ctx: Context) {
     private val mainH = Handler(Looper.getMainLooper())
     val cameraRequested get() = wantCamera
 
-    fun stop() { wantCamera = false; running = false }
+    fun stop() { wantCamera = false; running = false; if (!CarLink.active) HudFgService.stop(ctx) }
 
     fun resumeIfNeeded() { if (wantCamera && !running) launch() }
 
@@ -978,7 +978,8 @@ class Runner(private val ctx: Context) {
     }
 
     fun start() { useCamera = false; wantCamera = false; launch() }
-    fun startCamera() { useCamera = true; wantCamera = true; if (!running) status = "Đang mở camera..."; launch() }
+    // Giữ dịch vụ nền camera suốt lúc chạy: tắt màn hình / chuyển app khác (Android Auto) camera vẫn chạy
+    fun startCamera() { useCamera = true; wantCamera = true; HudFgService.startIfVisible(ctx); if (!running) status = "Đang mở camera..."; launch() }
 
     private fun openSource(live: Boolean, uri: Uri?, run: Run): FrameSource {
         if (!live) return VideoDecoder(ctx, uri!!)

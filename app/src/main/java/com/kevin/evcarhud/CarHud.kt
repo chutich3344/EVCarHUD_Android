@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.content.ContextCompat
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -120,12 +121,22 @@ object MediaNow {
 
 // Giữ camera + GPS chạy khi màn hình điện thoại tắt (lên xe không cần mở app trên điện thoại)
 class HudFgService : Service() {
+    companion object {
+        // Chỉ gọi lại khi app đang hiện trên màn hình điện thoại: gọi từ nền thì Android hạ loại dịch vụ, mất quyền camera
+        fun startIfVisible(ctx: Context) {
+            val i = ActivityManager.RunningAppProcessInfo()
+            ActivityManager.getMyMemoryState(i)
+            if (i.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) start(ctx)
+        }
+        fun start(ctx: Context) { try { ContextCompat.startForegroundService(ctx, Intent(ctx, HudFgService::class.java)) } catch (_: Throwable) {} }
+        fun stop(ctx: Context) { try { ctx.stopService(Intent(ctx, HudFgService::class.java)) } catch (_: Throwable) {} }
+    }
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("car", "EVCarHUD trên xe", NotificationManager.IMPORTANCE_LOW))
         val n = Notification.Builder(this, "car").setSmallIcon(R.drawable.car_play)
-            .setContentTitle("EVCarHUD đang chạy trên Android Auto").setOngoing(true).build()
+            .setContentTitle("EVCarHUD đang chạy camera").setOngoing(true).build()
         val type = if (Build.VERSION.SDK_INT >= 30)
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         else ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
@@ -153,8 +164,8 @@ class HudScreen(ctx: CarContext) : Screen(ctx) {
     // Mở app trên xe: tự bật camera + AI (không cần mở trên điện thoại); rút kết nối xe thì tắt cho đỡ nóng máy
     private fun autoStart() {
         val app = carContext.applicationContext
-        try { ContextCompat.startForegroundService(app, Intent(app, HudFgService::class.java)) } catch (_: Throwable) {}
         val r = RunnerHolder.get(app)
+        if (!r.running) HudFgService.start(app)   // camera đang chạy từ điện thoại thì dịch vụ đã có sẵn
         r.gps.start()
         if (!r.running && ContextCompat.checkSelfPermission(app, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             r.startCamera(); startedCam = true
@@ -163,7 +174,7 @@ class HudScreen(ctx: CarContext) : Screen(ctx) {
     private fun autoStop() {
         val app = carContext.applicationContext
         if (startedCam) { RunnerHolder.get(app).stop(); startedCam = false }
-        try { app.stopService(Intent(app, HudFgService::class.java)) } catch (_: Throwable) {}
+        if (!RunnerHolder.get(app).running) HudFgService.stop(app)
     }
 
     init {
@@ -631,7 +642,16 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
         val pic = CarLink.pic
         if (pic == null || !fresh()) {
             mutP.textSize = 18f * k
-            c.drawText("Đang mở camera…", r.left + 16f * k, r.centerY(), mutP)
+            // Chưa có hình: ghi rõ lý do (chưa cấp quyền, camera chưa chạy, đang tải model, lỗi...)
+            val app = ctx.applicationContext
+            val rn = RunnerHolder.get(app)
+            val msg = when {
+                ContextCompat.checkSelfPermission(app, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED ->
+                    "Mở EVCarHUD trên điện thoại để cấp quyền camera"
+                !rn.running -> "Camera chưa chạy: mở EVCarHUD trên điện thoại"
+                else -> rn.status.ifBlank { "Đang mở camera…" }
+            }
+            c.drawText(clip(msg, r.width() - 32f * k), r.left + 16f * k, r.centerY(), mutP)
             c.restore(); return
         }
         val pw = 1024f; val ph = CarLink.picH.toFloat()
