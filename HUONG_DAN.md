@@ -131,19 +131,22 @@ File thay: `Hud.kt`, `MainActivity.kt`, `Weather.kt`.
 - **Chẩn đoán > Thu ảnh huấn luyện**: 1 ảnh gốc mỗi 5 s khi xe chạy trên 10 km/h, tối đa 5000 ảnh, vào `files/dataset/`. Bật khi muốn gom ảnh để huấn luyện YOLO riêng, tắt khi không cần cho đỡ tốn bộ nhớ.
 
 ### Huấn luyện YOLO cho đường Việt Nam (một model gộp: vật cản + biển báo)
+App dùng **YOLOX** (Apache-2.0) thay YOLOv8: mọi model của Ultralytics (YOLOv8, YOLO11, YOLO26) theo giấy phép AGPL-3.0, bán app đóng mã nguồn phải mua giấy phép Enterprise trả phí hằng năm. Nếu sau này mua giấy phép, chỉ cần đổi `MODEL` trong Detector.kt về model Ultralytics (cùng định dạng đầu ra).
 Chỉ dùng **một** model YOLO cho cả xe cộ và biển báo, không chạy thêm model thứ hai (đỡ nóng máy).
 
 1. **Thu ảnh:** bật "Thu ảnh huấn luyện" chạy vài buổi (phố, cao tốc, đêm, mưa), hoặc lấy video từ dashcam 2K–4K. Từ video, trích 1–2 ảnh/giây và bỏ các đoạn đứng đèn đỏ:
    `ffmpeg -i video.mp4 -vf "fps=1,mpdecimate" -vsync vfr anh_%05d.jpg`
-2. **Gán nhãn tự động phần vật cản:** chạy model YOLO hiện tại trên ảnh mới để tạo sẵn nhãn xe máy / ô tô / người… (Ultralytics: `yolo predict model=yolo11n.pt source=anh/ save_txt=True conf=0.4`). Nếu ảnh mới chỉ có nhãn biển báo, model sẽ quên cách nhận xe.
-3. **Vẽ thêm nhãn biển báo** trên Roboflow hoặc CVAT: `speed_limit_40`, `speed_limit_50`, `speed_limit_60`, `speed_limit_80`… (và `stop_sign`, `traffic_light` nếu muốn). Kiểm tra lại nhãn xe tự động, sửa chỗ sai.
-4. **Huấn luyện** YOLO11n (hoặc v8n) trên Colab:
-   `yolo train model=yolo11n.pt data=data.yaml imgsz=960 epochs=150 fliplr=0.0 degrees=3 hsv_v=0.5`
-   - `fliplr=0.0` **bắt buộc**: lật ngang làm hỏng chữ số trên biển.
-   - `imgsz=960`: app gửi cả bề ngang khung vào YOLO khi model có biển báo, nên biển xa cần độ phân giải cao hơn 640.
-   - `hsv_v` tăng sáng/tối (nắng gắt, đèn pha rọi biển ban đêm); có thể thêm ảnh mờ do chuyển động bằng Albumentations.
-5. **Xuất ONNX** `yolo export model=best.pt format=onnx imgsz=960 opset=12`, lượng tử INT8 cho NPU (QNN) với khoảng 200 ảnh mẫu, đặt vào `assets` thay model cũ.
-6. **Tạo `assets/yolo_labels.txt`**, mỗi dòng một tên lớp đúng thứ tự trong `data.yaml`. Khi file có lớp `speed_limit_*`, app tự chuyển YOLO sang nhìn cả bề ngang khung (từ mép trên tới capo) để bắt biển ở lề phải.
+2. **Gán nhãn tự động phần vật cản:** chạy model hiện tại trên ảnh mới để tạo sẵn nhãn xe máy / ô tô / người… (dùng demo của YOLOX với `yolox_s.pth`, hoặc nhãn tự động của Roboflow / CVAT). Nếu ảnh mới chỉ có nhãn biển báo, model sẽ quên cách nhận xe.
+3. **Vẽ thêm nhãn biển báo** trên Roboflow hoặc CVAT: `speed_limit_40`, `speed_limit_50`, `speed_limit_60`, `speed_limit_80`… (và `stop_sign`, `traffic_light` nếu muốn). Kiểm tra lại nhãn xe tự động, sửa chỗ sai. Xuất bộ dữ liệu dạng **COCO JSON** (YOLOX đọc dạng này).
+4. **Huấn luyện YOLOX-S** trên Colab (mã nguồn https://github.com/Megvii-BaseDetection/YOLOX, giấy phép Apache-2.0: bán app không phải công khai mã nguồn). Tạo file exp `exps/vn_road.py` kế thừa `yolox_s` với `num_classes` = số lớp, `input_size = test_size = (576, 960)`, `flip_prob = 0.0`, rồi chạy:
+   `python tools/train.py -f exps/vn_road.py -c yolox_s.pth -d 1 -b 16 --fp16`
+   - `flip_prob = 0.0` **bắt buộc**: lật ngang làm hỏng chữ số trên biển.
+   - Kích thước 960: app gửi cả bề ngang khung vào YOLO khi model có biển báo, nên biển xa cần độ phân giải cao hơn 640.
+   - Tăng `hsv_prob` cho ảnh nắng gắt, đèn pha rọi biển ban đêm.
+5. **Xuất ONNX** bằng script của app (tự đổi về định dạng app đọc, app không phải sửa):
+   `PYTHONPATH=YOLOX python tools/yolox_export.py -f exps/vn_road.py -c best_ckpt.pth -o yolox_det.onnx --height 576 --width 960`
+   Đặt vào `assets` (hoặc Release "models") thay model cũ.
+6. **Tạo `assets/yolo_labels.txt`**, mỗi dòng một tên lớp đúng thứ tự `categories` trong file COCO JSON. Khi file có lớp `speed_limit_*`, app tự chuyển YOLO sang nhìn cả bề ngang khung (từ mép trên tới capo) để bắt biển ở lề phải.
 
 Giới hạn tốc độ đọc từ biển được **giữ** tới khi gặp biển mới, hoặc khi rẽ sang đường khác (tên đường VietMap đổi), tối đa 30 phút.
 

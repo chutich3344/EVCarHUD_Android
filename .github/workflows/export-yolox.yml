@@ -1,0 +1,44 @@
+# Xuất YOLOX-S (COCO, giấy phép Apache-2.0) ra ONNX đúng định dạng app đọc, rồi đặt vào Release "models"
+# với tên yolox_det.onnx (app tự tải lần đầu, ModelFiles.kt). Chạy lại khi sửa tools/yolox_export.py.
+name: Export YOLOX
+
+on:
+  push:
+    paths: [tools/yolox_export.py, .github/workflows/export-yolox.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cài thư viện
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install onnx onnxsim onnxruntime loguru tabulate thop psutil opencv-python-headless
+          git clone https://github.com/Megvii-BaseDetection/YOLOX.git yoloxsrc
+          git -C yoloxsrc checkout 6ddff4824372906469a7fae2dc3206c7aa4bbaee
+          curl -sSfL -o yolox_s.pth https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth
+
+      - name: Xuất ONNX
+        run: |
+          PYTHONPATH=yoloxsrc python tools/yolox_export.py -n yolox-s -c yolox_s.pth -o yolox_det.onnx
+          python -c "
+          import onnxruntime as ort, numpy as np
+          s = ort.InferenceSession('yolox_det.onnx')
+          o = s.run(None, {'images': np.zeros((1, 3, 384, 640), np.float32)})[0]
+          assert o.shape == (1, 84, 5040), o.shape
+          print('OK', o.shape)"
+
+      - name: Đưa lên Release "models"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload models yolox_det.onnx --repo "$GITHUB_REPOSITORY" --clobber
