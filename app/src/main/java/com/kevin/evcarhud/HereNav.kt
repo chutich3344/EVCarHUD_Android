@@ -657,8 +657,9 @@ class HereNav(private val gps: LocationFallback) {
     private val styleBadAt = LongArray(4) { -1_000_000L }
     private var diskWrites = 0
 
+    // Ô bản đồ thường (0, 1) giờ vẽ từ OSM: tên file khác để không lấy lại ô HERE cũ
     private fun tileFile(z: Int, x: Int, y: Int, style: Int): File? =
-        diskDir?.let { File(it, "s${style}_${z}_${x}_$y") }
+        diskDir?.let { File(it, (if (style <= 1) "o" else "s") + "${style}_${z}_${x}_$y") }
 
     private fun tile(z: Int, x: Int, y: Int, style: Int = 0): Bitmap? {
         val key = tileKey(z, x, y, style)
@@ -680,8 +681,18 @@ class HereNav(private val gps: LocationFallback) {
                     // 1) bộ nhớ máy (không tốn lượt gọi)
                     if (f != null && f.exists() && System.currentTimeMillis() - f.lastModified() < DISK_DAYS * 86_400_000L)
                         bmp = BitmapFactory.decodeFile(f.absolutePath, opt)
-                    // 2) tải từ HERE
-                    if (bmp == null) {
+                    // 2) bản đồ thường: tự vẽ từ dữ liệu OSM, không tốn lượt gọi HERE
+                    if (bmp == null && style <= 1) {
+                        bmp = OsmTiles.render(z, x, y, if (style == 0) 256 else 512)
+                        val b = bmp
+                        if (b != null && f != null) {
+                            val bo = java.io.ByteArrayOutputStream()
+                            b.compress(Bitmap.CompressFormat.PNG, 100, bo)
+                            saveTile(f, bo.toByteArray())
+                        }
+                    }
+                    // 3) vệ tinh / giao thông: tải từ HERE
+                    else if (bmp == null) {
                         val sz = if (style == 0) "" else "&size=512"
                         val url = if (style == 3) String.format(Locale.US, "%s/%d/%d/%d/png?size=512", TRAFFIC_TILE, z, x, y)
                         else {

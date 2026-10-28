@@ -571,6 +571,8 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
             c.drawText(l2, tmp.left + 14f * k, tmp.top + 50f * k, mutP)
         }
         if (MapCtl.traffic) { mutP.textSize = 13f * k; c.drawText("Giao thông HERE", r.left + 12f * k, r.top + 22f * k, mutP) }
+        // ghi công dữ liệu bản đồ (giấy phép ODbL)
+        mutP.textSize = 11f * k; c.drawText(OsmTiles.ATTRIB, r.right - mutP.measureText(OsmTiles.ATTRIB) - 8f * k, r.bottom - 6f * k, mutP)
         c.restore()
     }
     private fun tx(lon: Double, n: Double) = (lon + 180.0) / 360.0 * n

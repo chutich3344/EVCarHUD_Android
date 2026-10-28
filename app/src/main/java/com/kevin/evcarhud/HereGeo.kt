@@ -22,8 +22,17 @@ import kotlin.math.sqrt
 //  - chỉ gọi khi đi thêm >= 150 m (trong phố) / >= 400 m (trên 70 km/h), hoặc hướng xe đổi > 35° sau >= 30 m (vừa rẽ)
 //  - cách nhau tối thiểu 8 s
 //  - đang chỉ đường thì MainActivity lấy tên đường + tốc độ từ tuyến đã tải (HereNav), không gọi ở đây
+//  - có bản đồ OSM: tên đường lấy từ OSM trên máy (0 lượt), chỉ hỏi HERE giới hạn tốc độ khi sang đường khác
+//    (tên / loại đường OSM đổi) hoặc đi tiếp 3 km trên cùng đường; không có OSM thì theo quãng đường như cũ
 class HereGeo(private val gps: LocationFallback) {
     private val exec = Executors.newSingleThreadExecutor()
+    private val osmExec = Executors.newSingleThreadExecutor()
+    @Volatile private var osmBusy = false
+    @Volatile private var osmName = ""
+    @Volatile private var osmKey = ""
+    @Volatile private var osmGotAt = -1_000_000L
+    private var osmAt = -1_000_000L
+    private var hereKey = ""                 // đường OSM lúc hỏi HERE lần trước
     @Volatile private var road = ""
     @Volatile private var limit = 0
     @Volatile private var busy = false
@@ -53,17 +62,36 @@ class HereGeo(private val gps: LocationFallback) {
                 pLat = p.first; pLon = p.second
             }
             val now = SystemClock.elapsedRealtime()
+            // tra đường OSM mỗi 2 s (dữ liệu ô đã có trong bộ nhớ thì không tốn mạng)
+            if (!osmBusy && now - osmAt >= 2_000L) {
+                osmBusy = true
+                osmAt = now
+                val b = brg
+                osmExec.execute {
+                    try {
+                        val r = OsmTiles.roadAt(p.first, p.second, b)
+                        if (r != null) { osmName = r.name; osmKey = r.name + "|" + r.cls; osmGotAt = SystemClock.elapsedRealtime() }
+                    } catch (e: Throwable) { Log.w("HereGeo", "OSM", e) } finally { osmBusy = false }
+                }
+            }
+            val osmOk = now - osmGotAt < 10_000L
             if (!busy && speedKmh >= MIN_KMH && now - at >= MIN_GAP_MS) {
                 val d = if (lat0.isNaN()) Double.MAX_VALUE else meters(lat0, lon0, p.first, p.second)
-                val far = if (speedKmh > 70f) MOVE_FAST_M else MOVE_M
-                val turned = !brg.isNaN() && !brg0.isNaN() && angleDiff(brg, brg0) > TURN_DEG && d >= 30.0
-                if (d >= far || turned) {
+                val go = if (osmOk) osmKey != hereKey || d >= OSM_REFRESH_M
+                else {
+                    val far = if (speedKmh > 70f) MOVE_FAST_M else MOVE_M
+                    val turned = !brg.isNaN() && !brg0.isNaN() && angleDiff(brg, brg0) > TURN_DEG && d >= 30.0
+                    d >= far || turned
+                }
+                if (go) {
                     busy = true
                     at = now
                     lat0 = p.first; lon0 = p.second; brg0 = brg
+                    hereKey = osmKey
                     exec.execute { try { fetch(p.first, p.second) } finally { busy = false } }
                 }
             }
+            if (osmOk && osmName.isNotEmpty()) return osmName
         }
         return if (SystemClock.elapsedRealtime() - gotAt < STALE_MS) road else ""
     }
@@ -147,5 +175,6 @@ class HereGeo(private val gps: LocationFallback) {
         const val TURN_DEG = 35.0
         const val MIN_GAP_MS = 8_000L
         const val STALE_MS = 600_000L
+        const val OSM_REFRESH_M = 3_000.0
     }
 }
