@@ -26,9 +26,12 @@ jobs:
 
       - name: Dựng vietnam.pmtiles
         run: |
+          # Bản trước dùng nodemap "array": tạo file theo mọi ID nút của cả thế giới, đầy đĩa máy build
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          df -h .
           curl -fsSL -o planetiler.jar https://github.com/onthegomap/planetiler/releases/download/v0.8.3/planetiler.jar
           java -Xmx10g -jar planetiler.jar --download --area=vietnam --output=vietnam.pmtiles --force \
-            --nodemap-type=array --storage=mmap
+            --nodemap-type=sparsearray --storage=ram
           ls -lh vietnam.pmtiles
 
       - name: Cắt vùng TP.HCM
