@@ -50,8 +50,19 @@ object DashcamWifi {
             .sortedWith(compareBy<String>({ !looksLikeCam(it) }, { it.lowercase() }))
     }
 
+    // Tên Wi‑Fi máy đang nối trong Cài đặt Android (cần quyền vị trí, không có thì null)
+    @Suppress("DEPRECATION")
+    fun systemSsid(ctx: Context): String? = try {
+        (ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).connectionInfo?.ssid?.trim('"')
+            ?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
+    } catch (_: Throwable) { null }
+
     // Nối Wi‑Fi cam. onResult chạy trên luồng của ConnectivityManager: null = không nối được / người dùng huỷ.
     fun connect(ctx: Context, ssid: String, pass: String, onResult: (Network?) -> Unit) {
+        if (systemSsid(ctx) == ssid) {
+            release(ctx)
+            current(ctx)?.let { onResult(it); return }
+        }
         val cm = ctx.applicationContext.getSystemService(ConnectivityManager::class.java)
         release(ctx)
         val req = try {
@@ -83,6 +94,9 @@ object DashcamWifi {
         if (network != null) return
         val p = ctx.getSharedPreferences("evcarhud", Context.MODE_PRIVATE)
         val ssid = p.getString("camSsid", null) ?: return
+        // Máy đã tự nối Wi‑Fi cam trong Cài đặt Android thì dùng luôn: xin thêm mạng riêng sẽ chiếm suất
+        // "Wi‑Fi phụ" mà Android Auto không dây đang dùng, làm rớt Android Auto
+        if (systemSsid(ctx) == ssid) return
         val pass = p.getString("camPass", DEFAULT_PASS) ?: DEFAULT_PASS
         val latch = CountDownLatch(1)
         connect(ctx, ssid, pass) { latch.countDown() }

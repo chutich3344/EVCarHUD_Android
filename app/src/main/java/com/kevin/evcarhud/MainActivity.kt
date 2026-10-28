@@ -1426,6 +1426,7 @@ private fun DashcamFinder(runner: Runner) {
                                 probe(DashcamWifi.current(ctx))
                             }.padding(vertical = 12.dp)
                         )
+                        Text("Đang dùng Android Auto không dây: nối Wi‑Fi cam trong Cài đặt Android trước (chọn vẫn giữ kết nối), rồi bấm dòng trên.", fontSize = 13.sp, color = DescGray)
                         if (ssids.isEmpty()) Text("Không thấy Wi‑Fi nào. Bật Wi‑Fi trên cam, bật vị trí của máy rồi thử lại.", fontSize = 14.sp)
                         for (s in ssids) {
                             Text(
