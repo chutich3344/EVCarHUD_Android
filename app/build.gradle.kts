@@ -10,7 +10,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.kevin.evcarhud"
+        applicationId = "com.evcarhud.app"
         minSdk = 29
         targetSdk = 37
         // Mỗi lần build trên GitHub tăng số phiên bản (Play Store bắt buộc versionCode mới cho mỗi lần tải lên)
