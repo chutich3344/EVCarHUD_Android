@@ -7,7 +7,6 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.Locale
 
 // Model không nằm trong APK (APK quá nặng để tải trên điện thoại): lần đầu mở app thì tải từ Release "models" trên GitHub.
 // Bản build ở máy nhà vẫn có thể để model trong assets: có trong assets thì dùng assets, không tải.
@@ -17,6 +16,7 @@ object ModelFiles {
     private const val TAG = "ModelFiles"
     private const val BASE = "https://github.com/chutich3344/EVCarHUD_Android/releases/download/models/"
     private const val MAX_TRIES = 30
+    private const val WAIT = "Xin vui lòng kết nối mạng ổn định để tải models về."
 
     // Dòng trạng thái tải (Runner gán để hiện lên màn hình)
     @Volatile var onProgress: ((String) -> Unit)? = null
@@ -32,11 +32,9 @@ object ModelFiles {
             return file
         }
         download(BASE + name, file, name)
-        onProgress?.invoke("Đã tải xong $name, đang nạp lên NPU (lần đầu mất vài phút)...")
+        onProgress?.invoke("Đang chuẩn bị, lần đầu mất vài phút...")
         return file
     }
-
-    private fun mb(b: Long) = String.format(Locale.US, "%.0f", b / 1048576.0)
 
     private fun download(url: String, dst: File, label: String) {
         val part = File(dst.parentFile, dst.name + ".part")
@@ -73,8 +71,8 @@ object ModelFiles {
                             val now = SystemClock.elapsedRealtime()
                             if (now - lastShow > 500) {
                                 lastShow = now
-                                onProgress?.invoke(if (total > 0) "Đang tải model $label: ${mb(got)}/${mb(total)} MB (${got * 100 / total}%), chỉ tải lần đầu, nên dùng Wi-Fi"
-                                    else "Đang tải model $label: ${mb(got)} MB, chỉ tải lần đầu, nên dùng Wi-Fi")
+                                // Chỉ hiện %, không hiện tên file / số MB cho đỡ cảm giác app nặng
+                                onProgress?.invoke(if (total > 0) "$WAIT ${got * 100 / total}%" else WAIT)
                             }
                         }
                     }
@@ -86,10 +84,10 @@ object ModelFiles {
             } catch (e: Throwable) {
                 lastErr = e
                 Log.w(TAG, "tải $label lỗi (lần $attempt)", e)
-                onProgress?.invoke("Tải model $label bị ngắt (${e.message}), thử lại lần $attempt/$MAX_TRIES...")
+                onProgress?.invoke("Mạng chập chờn, đang thử tải lại... $WAIT")
                 SystemClock.sleep((2000L * attempt).coerceAtMost(20_000L))
             }
         }
-        throw IllegalStateException("Không tải được model $label: ${lastErr?.message}. Kiểm tra mạng rồi mở lại app (phần đã tải được giữ lại).")
+        throw IllegalStateException("Chưa tải xong, xin vui lòng kết nối mạng ổn định rồi mở lại app (phần đã tải được giữ lại).", lastErr)
     }
 }
