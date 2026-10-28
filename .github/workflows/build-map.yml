@@ -1,0 +1,52 @@
+# Bản đồ nền Việt Nam tự dựng từ OpenStreetMap (thay tile HERE, không tốn lượt):
+# Planetiler (lược đồ OpenMapTiles) -> một file PMTiles cả nước, đặt ở Release "map":
+# https://github.com/chutich3344/EVCarHUD_Android/releases/download/map/vietnam.pmtiles
+# Kèm hcm.pmtiles (vùng TP.HCM, nhỏ) để làm mockup / thử nhanh.
+# Dữ liệu © OpenStreetMap contributors (ODbL), lược đồ © OpenMapTiles: app phải ghi công trên bản đồ.
+name: Build map
+
+on:
+  push:
+    branches: [claude/project-thread-8euyc5]
+    paths: [.github/workflows/build-map.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Dựng vietnam.pmtiles
+        run: |
+          curl -fsSL -o planetiler.jar https://github.com/onthegomap/planetiler/releases/download/v0.8.3/planetiler.jar
+          java -Xmx10g -jar planetiler.jar --download --area=vietnam --output=vietnam.pmtiles --force \
+            --nodemap-type=array --storage=mmap
+          ls -lh vietnam.pmtiles
+
+      - name: Cắt vùng TP.HCM
+        run: |
+          curl -fsSL https://github.com/protomaps/go-pmtiles/releases/download/v1.22.1/go-pmtiles_1.22.1_Linux_x86_64.tar.gz | tar xz pmtiles
+          ./pmtiles extract vietnam.pmtiles hcm.pmtiles --bbox=106.60,10.70,106.82,10.88
+          ./pmtiles show vietnam.pmtiles | head -30
+          ls -lh hcm.pmtiles
+
+      - name: Đưa lên Release "map"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=map
+          NOTE="Bản đồ OSM Việt Nam dựng lúc $(TZ=Asia/Ho_Chi_Minh date '+%H:%M %d/%m/%Y'). © OpenStreetMap contributors, © OpenMapTiles."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "$NOTE"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Bản đồ OSM Việt Nam" --notes "$NOTE" --prerelease
+          fi
+          gh release upload "$TAG" vietnam.pmtiles hcm.pmtiles --repo "$GITHUB_REPOSITORY" --clobber
