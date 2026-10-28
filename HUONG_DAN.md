@@ -138,13 +138,13 @@ Chỉ dùng **một** model YOLO cho cả xe cộ và biển báo, không chạy
    `ffmpeg -i video.mp4 -vf "fps=1,mpdecimate" -vsync vfr anh_%05d.jpg`
 2. **Gán nhãn tự động phần vật cản:** chạy model hiện tại trên ảnh mới để tạo sẵn nhãn xe máy / ô tô / người… (dùng demo của YOLOX với `yolox_s.pth`, hoặc nhãn tự động của Roboflow / CVAT). Nếu ảnh mới chỉ có nhãn biển báo, model sẽ quên cách nhận xe.
 3. **Vẽ thêm nhãn biển báo** trên Roboflow hoặc CVAT: `speed_limit_40`, `speed_limit_50`, `speed_limit_60`, `speed_limit_80`… (và `stop_sign`, `traffic_light` nếu muốn). Kiểm tra lại nhãn xe tự động, sửa chỗ sai. Xuất bộ dữ liệu dạng **COCO JSON** (YOLOX đọc dạng này).
-4. **Huấn luyện YOLOX-S** trên Colab (mã nguồn https://github.com/Megvii-BaseDetection/YOLOX, giấy phép Apache-2.0: bán app không phải công khai mã nguồn). Tạo file exp `exps/vn_road.py` kế thừa `yolox_s` với `num_classes` = số lớp, `input_size = test_size = (576, 960)`, `flip_prob = 0.0`, rồi chạy:
-   `python tools/train.py -f exps/vn_road.py -c yolox_s.pth -d 1 -b 16 --fp16`
+4. **Huấn luyện YOLOX-Tiny** (app đang dùng vì mát máy; muốn chính xác hơn thì YOLOX-S) trên Colab (mã nguồn https://github.com/Megvii-BaseDetection/YOLOX, giấy phép Apache-2.0: bán app không phải công khai mã nguồn). Tạo file exp `exps/vn_road.py` kế thừa `yolox_tiny` với `num_classes` = số lớp, `input_size = test_size = (576, 960)`, `flip_prob = 0.0`, rồi chạy:
+   `python tools/train.py -f exps/vn_road.py -c yolox_tiny.pth -d 1 -b 16 --fp16`
    - `flip_prob = 0.0` **bắt buộc**: lật ngang làm hỏng chữ số trên biển.
    - Kích thước 960: app gửi cả bề ngang khung vào YOLO khi model có biển báo, nên biển xa cần độ phân giải cao hơn 640.
    - Tăng `hsv_prob` cho ảnh nắng gắt, đèn pha rọi biển ban đêm.
 5. **Xuất ONNX** bằng script của app (tự đổi về định dạng app đọc, app không phải sửa):
-   `PYTHONPATH=YOLOX python tools/yolox_export.py -f exps/vn_road.py -c best_ckpt.pth -o yolox_det.onnx --height 576 --width 960`
+   `PYTHONPATH=YOLOX python tools/yolox_export.py -f exps/vn_road.py -c best_ckpt.pth -o yolox_tiny.onnx --height 576 --width 960`
    Đặt vào `assets` (hoặc Release "models") thay model cũ.
 6. **Tạo `assets/yolo_labels.txt`**, mỗi dòng một tên lớp đúng thứ tự `categories` trong file COCO JSON. Khi file có lớp `speed_limit_*`, app tự chuyển YOLO sang nhìn cả bề ngang khung (từ mép trên tới capo) để bắt biển ở lề phải.
 

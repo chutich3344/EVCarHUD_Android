@@ -46,15 +46,16 @@ fun clsName(c: Int) = when (c) {
     else -> if (isSpeedSign(c)) "Biển ${c - SIGN_BASE}" else "?"
 }
 
-// Model mặc định: YOLOX-S COCO (Apache-2.0, dùng thương mại được), xuất bằng tools/yolox_export.py ra cùng định dạng
+// Model mặc định: YOLOX-Tiny COCO (Apache-2.0, dùng thương mại được; mát máy hơn YOLOX-S, muốn chính xác hơn
+// thì đổi MODEL thành "yolox_s.onnx"), xuất bằng tools/yolox_export.py ra cùng định dạng
 // YOLOv8 / YOLO11 (đầu ra [1, 4+nc, N], không NMS), nên đổi về YOLOv8/11/26 (AGPL) chỉ cần đổi MODEL.
 // Chạy trên QNN (NPU), lỗi thì rơi về CPU.
-// Model riêng cho đường Việt Nam: thay assets/yolox_det.onnx và thêm assets/yolo_labels.txt
+// Model riêng cho đường Việt Nam: thay assets/yolox_tiny.onnx và thêm assets/yolo_labels.txt
 // (mỗi dòng một tên lớp theo đúng thứ tự lúc huấn luyện). Tên được đổi về mã của app bằng labelCode().
 class YoloDetector(private val context: Context) {
     companion object {
-        const val MODEL = "yolox_det.onnx"
-        const val CTX = "yolox_qnn_ctx.onnx"
+        const val MODEL = "yolox_tiny.onnx"
+        const val CTX = "yolox_tiny_qnn_ctx.onnx"
         // COCO: 0 người, 1 xe đạp, 2 ô tô, 3 xe máy, 5 xe buýt, 7 xe tải, 9 đèn giao thông, 11 biển STOP
         val CLASSES = intArrayOf(0, 1, 2, 3, 5, 7, 9, 11)
         const val CONF = 0.25f

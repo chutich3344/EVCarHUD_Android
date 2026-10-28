@@ -6,8 +6,8 @@ và ra [1, N, 5+nc] có điểm "objectness" riêng.
 Script này gói cả hai đầu vào trong đồ thị ONNX nên app không phải sửa gì khi đổi model.
 
 Cách dùng (cần mã nguồn YOLOX: git clone https://github.com/Megvii-BaseDetection/YOLOX):
-  PYTHONPATH=YOLOX python yolox_export.py -n yolox-s -c yolox_s.pth -o yolox_det.onnx
-  PYTHONPATH=YOLOX python yolox_export.py -f exps/vn_road.py -c best_ckpt.pth -o yolox_det.onnx
+  PYTHONPATH=YOLOX python yolox_export.py -n yolox-s -c yolox_s.pth -o yolox_s.onnx
+  PYTHONPATH=YOLOX python yolox_export.py -f exps/vn_road.py -c best_ckpt.pth -o yolox_tiny.onnx
 (yolox_s.pth: trọng số COCO ở Release 0.1.1rc0 của YOLOX, đã thử dùng không cần --legacy.)
 --legacy chỉ dành cho trọng số rất cũ cần ảnh RGB chuẩn hoá mean/std.
 """
@@ -42,7 +42,7 @@ def main():
     ap.add_argument("-n", "--name", default=None, help="yolox-nano / yolox-tiny / yolox-s / yolox-m ...")
     ap.add_argument("-f", "--exp_file", default=None, help="file exp khi tự huấn luyện")
     ap.add_argument("-c", "--ckpt", required=True)
-    ap.add_argument("-o", "--output", default="yolox_det.onnx")
+    ap.add_argument("-o", "--output", default="yolox_tiny.onnx")
     ap.add_argument("--height", type=int, default=384)
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--legacy", action="store_true")
