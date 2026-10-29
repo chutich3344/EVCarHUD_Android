@@ -73,6 +73,21 @@ object HudRenderer {
 
     private fun sigmoid(x: Float) = 1f / (1f + exp(-x))
 
+    // Tắt comma.ai (tiết kiệm nhiệt): đầu ra giả "đường thẳng" cho HUD. Làn ±1,8 m, quỹ đạo thẳng, vạch làn và
+    // mép đường ẩn, không có xe dẫn đầu của model: khoảng cách và cảnh báo va chạm lấy hoàn toàn từ hộp YOLO.
+    fun straightOut(): FloatArray {
+        val o = FloatArray(2200)
+        val ys = floatArrayOf(-5.4f, -1.8f, 1.8f, 5.4f)
+        for (l in 0 until 4) {
+            for (i in 0 until 33) { o[LANE + l * 66 + i * 2] = ys[l]; o[LANE + l * 66 + i * 2 + 1] = camH }
+            o[LANE_PROB + l * 2 + 1] = -10f
+        }
+        for (e in 0 until 2) for (i in 0 until 33) { o[EDGES + e * 66 + i * 2] = if (e == 0) -1000f else 1000f; o[EDGES + e * 66 + i * 2 + 1] = camH }
+        for (p in 0 until 33) o[PLAN + p * 15] = X_IDXS[p]
+        o[LEAD_PROB] = -10f
+        return o
+    }
+
     // Chi tiết lần đánh giá nguy cơ gần nhất (cho nhật ký cảnh báo); chỉ luồng hiển thị ghi/đọc
     var riskDist = Float.NaN      // m, vật cản gần nhất trên quỹ đạo
         private set

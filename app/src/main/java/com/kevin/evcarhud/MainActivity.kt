@@ -155,6 +155,8 @@ internal class FrameJob(
 )
 
 // Khung dùng để SUY LUẬN: chỉ những khung nằm trên lưới 20 Hz
+private val NO_INPUT = ByteArray(0)
+
 internal class InferJob(
     val input: ByteArray,
     val dtUs: Long,
@@ -193,6 +195,8 @@ class Runner(private val ctx: Context) {
     // Tiết kiệm nhiệt (mặc định bật): chạy mát khi không có sò lạnh. NPU 10 lần/s (15 khi ≥60 km/h, 20 khi có nguy cơ),
     // YOLO 5 lần/s, điện thoại không hiện (đang cắm Android Auto / tắt màn hình) thì chỉ dựng ảnh 5 hình/s
     var ecoMode by mutableStateOf(prefs.getBoolean("ecoMode", true))
+    // Tắt comma.ai: chỉ chạy YOLO (mát hơn nhiều), mất dải đường xanh / vạch làn / xe dẫn đầu của model
+    var commaOn by mutableStateOf(prefs.getBoolean("commaOn", true))
     // Nhiệt độ pin mục tiêu (°C): bắt đầu giãn nhịp sớm khi pin tiến gần mức này, không chờ Android báo nóng
     var coolTarget by mutableStateOf(prefs.getFloat("coolTarget", 40f).coerceIn(35f, 45f))
     var capFps by mutableStateOf(true)       // phát đúng nhịp thời gian thực của video
@@ -293,7 +297,7 @@ class Runner(private val ctx: Context) {
             .putInt("alertSound", alertSound).putBoolean("collect", collectData)
             .putFloat("camH", camH).putBoolean("reflect", reflect)
             .putInt("navVehicle", navVehicle).putBoolean("miniMap", miniMap)
-            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).putBoolean("cooler", cooler).putBoolean("ecoMode", ecoMode)
+            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).putBoolean("cooler", cooler).putBoolean("ecoMode", ecoMode).putBoolean("commaOn", commaOn)
             .putBoolean("dimStill", dimStill).apply()
         nav.vehicle = if (navVehicle == 1) "scooter" else "car"
         nav.showMini = miniMap
@@ -497,9 +501,12 @@ class Runner(private val ctx: Context) {
                         acc = minOf(acc - 20, 19)
                         val dtUs = if (lastPts < 0) STEP_US else yuv.ptsUs - lastPts
                         lastPts = yuv.ptsUs
-                        val input = ByteArray(Preprocess.INPUT_SIZE)
-                        warper.warp(yuv, fSrc, cx, cy, 910f, 47.6f, input, 0)
-                        warper.warp(yuv, fSrc, cx, cy, 455f, 151.8f, input, Preprocess.STREAM)
+                        // comma.ai tắt: không cần ảnh đầu vào (đỡ cả CPU nắn ảnh), luồng NPU chỉ chạy YOLO
+                        val input = if (commaOn) ByteArray(Preprocess.INPUT_SIZE) else NO_INPUT
+                        if (commaOn) {
+                            warper.warp(yuv, fSrc, cx, cy, 910f, 47.6f, input, 0)
+                            warper.warp(yuv, fSrc, cx, cy, 455f, 151.8f, input, Preprocess.STREAM)
+                        }
 
                         val yh = if (idle) minOf(yoloHz, 2f) else yoloHz
                         val nowY = SystemClock.elapsedRealtime()
@@ -674,7 +681,7 @@ class Runner(private val ctx: Context) {
                 if (coolPause) continue
 
                 val t0 = SystemClock.elapsedRealtime()
-                val out = eng.step(job.input)
+                val out = if (job.input.isEmpty()) HudRenderer.straightOut() else eng.step(job.input)
                 val npuMs = SystemClock.elapsedRealtime() - t0
 
                 // YOLO (NPU) theo nhịp yoloHz (luồng A đã chọn khung); các khung giữa dùng lại hộp gần nhất
@@ -1040,6 +1047,7 @@ class Runner(private val ctx: Context) {
                 bp = BeepPlayer(beepVolume.toInt())
                 beeper = bp
                 ModelFiles.onProgress = { status = it }
+                htpMode = if (ecoMode) "balanced" else "sustained_high_performance"   // áp dụng khi nạp model (lần mở app sau)
                 if (engine == null) {
                     status = "Đang nạp model lên NPU (không có cache sẽ mất ~13 phút)..."
                     val e = DrivingEngine(ctx)
@@ -1570,6 +1578,10 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             SwitchRow("Tiết kiệm nhiệt", "Chạy mát khi không có sò lạnh: AI nhìn đường 10 lần/giây (nhanh hơn khi chạy cao tốc hoặc có nguy cơ va chạm), " +
                 "đang cắm Android Auto hoặc tắt màn hình điện thoại thì điện thoại không vẽ hình. Tắt: AI chạy tối đa, máy nóng nhanh hơn.", runner.ecoMode) {
                 runner.ecoMode = it; runner.savePrefs()
+            }
+            RowLine(); SwitchRow("Dùng comma.ai", "Vẽ dải đường xanh, vạch làn và đoán xe phía trước bằng model comma.ai (nặng, nóng máy). " +
+                "Tắt: chỉ dùng YOLO, máy mát hơn nhiều, vẫn báo xe phía trước / người đi bộ / biển báo.", runner.commaOn) {
+                runner.commaOn = it; runner.savePrefs()
             }
             RowLine(); SwitchRow("Tự giảm tải khi nóng", "Giãn nhịp YOLO và NPU theo nhiệt độ máy.", runner.thermalAuto) { runner.thermalAuto = it }
             RowLine(); SwitchRow("Có sò lạnh", "Bật khi gắn sò lạnh (quạt Peltier) sau lưng máy. App nhắc khi pin xuống dưới 25°C (dễ đọng hơi nước) " +

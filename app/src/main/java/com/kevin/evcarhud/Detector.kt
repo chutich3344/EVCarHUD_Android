@@ -148,7 +148,7 @@ class YoloDetector(private val context: Context) {
         addQnn(
             mapOf(
                 "backend_path" to "libQnnHtp.so",
-                "htp_performance_mode" to "sustained_high_performance",
+                "htp_performance_mode" to htpMode,
                 "enable_htp_fp16_precision" to "1"
             )
         )

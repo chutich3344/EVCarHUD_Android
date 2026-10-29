@@ -15,6 +15,9 @@ import java.nio.ByteOrder
 private const val MODEL_NAME = "big_driving_supercombo.onnx"
 private const val CTX_NAME = "model_qnn_ctx.onnx"
 
+// Nhịp xung NPU (Hexagon): "balanced" chạy xung thấp hơn, mát hơn; đủ cho 10 lần/giây. Runner đặt theo "Tiết kiệm nhiệt"
+@Volatile var htpMode = "sustained_high_performance"
+
 private val STATE_MAP = listOf(
     "state_img_q" to "next_state_img_q",
     "state_desire_q" to "next_state_desire_q",
@@ -155,7 +158,7 @@ class DrivingEngine(private val context: Context) {
         addQnn(
             mapOf(
                 "backend_path" to "libQnnHtp.so",
-                "htp_performance_mode" to "sustained_high_performance",
+                "htp_performance_mode" to htpMode,
                 "enable_htp_fp16_precision" to "1"
             )
         )
