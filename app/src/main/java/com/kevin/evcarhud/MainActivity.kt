@@ -131,7 +131,7 @@ private const val STATUS_MS = 500L      // chu kỳ cập nhật dòng trạng t
 private const val RESYNC_NS = 250_000_000L  // trễ quá 250 ms thì đồng bộ lại đồng hồ phát, không "tua nhanh"
 private const val STALL_MS = 5000L      // camera không ra khung nào quá 5 s -> coi là treo, tự mở lại
 private const val YOLO_ROI_W = 0.8f   // YOLO nhìn dải giữa khung (đường phía trước) rộng 80% chiều ngang; 1f = toàn khung
-private const val HOOD_DEFAULT = 0.15f  // mặc định che 15% đáy khung (capo khi đặt máy trên taplo); chọn 5 / 10 / 15% trong Cài đặt
+private const val HOOD_DEFAULT = 0.10f  // mặc định che 10% đáy khung (capo khi đặt máy trên taplo); chọn 5 / 10 / 15% trong Cài đặt
 private const val STREAM_DEFAULT = "rtsp://192.168.0.1:554/livestream/12"  // 70mai (M300/M310…); chip Novatek: rtsp://192.168.1.254/xxx.mov
 
 // Nguồn camera trực tiếp
@@ -812,7 +812,7 @@ class Runner(private val ctx: Context) {
                     perfText, perfCpu >= 70f)
                 pk.endRecording()
                 pic = pk
-                CarLink.feed(pk, job.bmp, spd, limitNow, if (nav.active) nav.turn else null, street)
+                CarLink.feed(pk, job.bmp, spd, limitNow, if (nav.active) nav.turn else null, street, hoodCut)
                 if (r.yoloMs >= 0) lastYoloMs = r.yoloMs
                 logSpd = spd
                 logWarn = maxOf(spd, r.speedKmh)

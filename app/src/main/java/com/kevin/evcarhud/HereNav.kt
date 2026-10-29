@@ -68,6 +68,11 @@ class HereNav(private val gps: LocationFallback) {
         private set
     @Volatile var remainText = ""
         private set
+    // Quãng đường / thời gian còn lại (cho thẻ ETA trên Android Auto); -1 = chưa có
+    @Volatile var remainM = -1.0
+        private set
+    @Volatile var remainSec = -1.0
+        private set
     // Dòng báo dưới ô hướng rẽ: sự cố / trạm thu phí / lối ra sắp tới ("" = không có). bannerKind: NOTE_*
     @Volatile var bannerText = ""
         private set
@@ -195,7 +200,7 @@ class HereNav(private val gps: LocationFallback) {
         lastReq = -1_000_000L
         arrivedAt = -1L
         turn = null
-        remainText = ""
+        remainText = ""; remainM = -1.0; remainSec = -1.0
         note = "Đang tính đường tới $name…"
         active = true
     }
@@ -205,7 +210,7 @@ class HereNav(private val gps: LocationFallback) {
         active = false
         route = null
         turn = null
-        remainText = ""
+        remainText = ""; remainM = -1.0; remainSec = -1.0
         note = "Đã dừng chỉ đường"
     }
 
@@ -538,6 +543,7 @@ class HereNav(private val gps: LocationFallback) {
         val remain = max(0.0, r.totalM - along)
         val remainS = r.totalS * remain / max(1.0, r.totalM)
         remainText = "${fmtKm(remain)} · ${max(1, (remainS / 60).roundToInt())} phút"
+        remainM = remain; remainSec = remainS
 
         // Sự cố / trạm phí / lối ra sắp tới: hiện dòng báo, đọc một lần
         var bt0 = ""; var bk = 0
