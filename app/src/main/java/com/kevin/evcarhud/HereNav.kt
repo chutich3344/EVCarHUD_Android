@@ -622,6 +622,8 @@ class HereNav(private val gps: LocationFallback) {
     // Mỗi ô 256 px tải một lần rồi giữ trong bộ nhớ (tối đa TILE_MAX ô); mỗi ô tải về tính một lượt gọi API.
     // 4 luồng tải song song (1 luồng làm bản đồ trang 2 tải chậm, phóng to / thu nhỏ phải chờ vài giây)
     private val tileExec = Executors.newFixedThreadPool(4)
+    // ô OSM vẽ ngay trên máy: một luồng ưu tiên thấp, khỏi tranh CPU với AI (4 luồng vẽ cùng lúc làm máy nóng)
+    private val osmExec = Executors.newSingleThreadExecutor { r -> Thread(r, "osm-tile").apply { priority = Thread.MIN_PRIORITY } }
     private val tiles = object : LinkedHashMap<Long, Bitmap>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Bitmap>?) = size > TILE_MAX
     }
@@ -678,7 +680,7 @@ class HereNav(private val gps: LocationFallback) {
             if (now - (failAt[key] ?: -1_000_000L) < 60_000L) return have
             if (now - styleBadAt[style] < 600_000L) return have
             tileWait.add(key)
-            tileExec.execute {
+            (if (style <= 1) osmExec else tileExec).execute {
                 var bmp: Bitmap? = null
                 var bad = 0
                 val opt = BitmapFactory.Options().apply { if (style == 1 || style == 2) inPreferredConfig = Bitmap.Config.RGB_565 }
@@ -693,7 +695,7 @@ class HereNav(private val gps: LocationFallback) {
                         val b = bmp
                         if (b != null && f != null) {
                             val bo = java.io.ByteArrayOutputStream()
-                            b.compress(Bitmap.CompressFormat.PNG, 100, bo)
+                            b.compress(Bitmap.CompressFormat.JPEG, 90, bo)   // JPEG nén nhanh hơn PNG nhiều
                             saveTile(f, bo.toByteArray())
                         }
                     }

@@ -180,7 +180,13 @@ object OsmTiles {
         }
     }
 
-    class Feat(val type: Int, val tags: Map<String, String>, val geom: List<FloatArray>)
+    class Feat(val type: Int, val tags: Map<String, String>, val geom: List<FloatArray>) {
+        // khung bao (minX, minY, maxX, maxY) để bỏ qua nét nằm ngoài ô đang vẽ khi phóng to quá z14
+        val box = FloatArray(4).also { b ->
+            b[0] = Float.MAX_VALUE; b[1] = Float.MAX_VALUE; b[2] = -Float.MAX_VALUE; b[3] = -Float.MAX_VALUE
+            for (part in geom) { var i = 0; while (i + 1 < part.size) { b[0] = min(b[0], part[i]); b[2] = max(b[2], part[i]); b[1] = min(b[1], part[i + 1]); b[3] = max(b[3], part[i + 1]); i += 2 } }
+        }
+    }
     class Tile(val extent: Int, val layers: Map<String, List<Feat>>)
 
     private val WANT = setOf("water", "waterway", "landcover", "park", "building", "transportation", "transportation_name")
@@ -314,7 +320,13 @@ object OsmTiles {
         val ox = -((x - ((x shr dz) shl dz)) * size).toFloat()
         val oy = -((y - ((y shr dz) shl dz)) * size).toFloat()
         val path = Path()
-        fun build(f: Feat) {
+        // vùng của ô đích trong toạ độ ô nguồn (cộng lề cho nét dày / chữ)
+        val span = t.extent.toFloat() / (1 shl dz)
+        val lx = (x - ((x shr dz) shl dz)) * span; val ly = (y - ((y shr dz) shl dz)) * span
+        val mg = span * 0.2f
+        fun vis(f: Feat) = !(f.box[2] < lx - mg || f.box[0] > lx + span + mg || f.box[3] < ly - mg || f.box[1] > ly + span + mg)
+        fun build(f: Feat): Boolean {
+            if (!vis(f)) return false
             path.reset()
             for (part in f.geom) {
                 var i = 0
@@ -324,16 +336,17 @@ object OsmTiles {
                     i += 2
                 }
             }
+            return true
         }
         // bề rộng nét theo mức zoom: chuẩn ở z16 với ô 512 px
         val zf = (1 shl max(0, z - 10)).toFloat() / 64f * (size / 512f)
         fun w(base: Float) = max(0.8f, base * zf)
-        for (f in t.layers["landcover"].orEmpty()) if (f.type == 3 && f.tags["class"] in GREEN) { build(f); c.drawPath(path, parkF) }
-        for (f in t.layers["park"].orEmpty()) if (f.type == 3) { build(f); c.drawPath(path, parkF) }
-        for (f in t.layers["water"].orEmpty()) if (f.type == 3) { build(f); c.drawPath(path, waterF) }
+        for (f in t.layers["landcover"].orEmpty()) if (f.type == 3 && f.tags["class"] in GREEN) { if (build(f)) c.drawPath(path, parkF) }
+        for (f in t.layers["park"].orEmpty()) if (f.type == 3) { if (build(f)) c.drawPath(path, parkF) }
+        for (f in t.layers["water"].orEmpty()) if (f.type == 3) { if (build(f)) c.drawPath(path, waterF) }
         waterL.strokeWidth = w(4f)
-        for (f in t.layers["waterway"].orEmpty()) if (f.type == 2) { build(f); c.drawPath(path, waterL) }
-        if (z >= 15) for (f in t.layers["building"].orEmpty()) if (f.type == 3) { build(f); c.drawPath(path, bldF) }
+        for (f in t.layers["waterway"].orEmpty()) if (f.type == 2) { if (build(f)) c.drawPath(path, waterL) }
+        if (z >= 15) for (f in t.layers["building"].orEmpty()) if (f.type == 3) { if (build(f)) c.drawPath(path, bldF) }
         roadMinor.strokeWidth = w(5f); roadMid.strokeWidth = w(8f); roadMajor.strokeWidth = w(11f); roadMotor.strokeWidth = w(13f)
         val roads = t.layers["transportation"].orEmpty().filter { it.type == 2 }
         for (pass in 0..3) for (f in roads) {
@@ -344,7 +357,7 @@ object OsmTiles {
                 "motorway" -> if (pass == 3) roadMotor else null
                 else -> null
             } ?: continue
-            build(f); c.drawPath(path, p)
+            if (build(f)) c.drawPath(path, p)
         }
         // tên đường dọc theo đường (từ z15), chữ luôn xuôi chiều đọc
         if (z >= 15) {
@@ -353,6 +366,7 @@ object OsmTiles {
             val pm = PathMeasure()
             for (f in t.layers["transportation_name"].orEmpty()) {
                 val name = f.tags["name:vi"]?.ifBlank { null } ?: f.tags["name"]?.ifBlank { null } ?: continue
+                if (!vis(f)) continue
                 for (part in f.geom) {
                     if (part.size < 4) continue
                     val flip = part[part.size - 2] < part[0]
