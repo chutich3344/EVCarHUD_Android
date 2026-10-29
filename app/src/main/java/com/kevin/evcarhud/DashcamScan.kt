@@ -111,6 +111,26 @@ object DashcamWifi {
     }
 
     // Mạng Wi‑Fi để gắn socket: mạng cam app tự nối, không có thì Wi‑Fi máy đang nối
+    // Các mạng có thể tới được camera [host], thử lần lượt: mạng app tự nối, Wi‑Fi cùng dải IP với cam,
+    // Wi‑Fi khác, cuối cùng null = để Android tự chọn. (Có máy có nhiều mạng Wi‑Fi cùng lúc: Android Auto, cam…)
+    fun candidates(ctx: Context, host: String): List<Network?> {
+        val out = ArrayList<Network?>()
+        network?.let { out += it }
+        try {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val prefix = host.substringBeforeLast('.') + "."
+            @Suppress("DEPRECATION")
+            val wifi = cm.allNetworks.filter { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
+            val same = wifi.filter { n ->
+                cm.getLinkProperties(n)?.linkAddresses?.any { (it.address as? Inet4Address)?.hostAddress?.startsWith(prefix) == true } == true
+            }
+            out += same
+            out += wifi
+        } catch (_: Throwable) {}
+        out += null
+        return out.distinct()
+    }
+
     fun current(ctx: Context): Network? = network ?: try {
         val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         @Suppress("DEPRECATION")
@@ -129,10 +149,14 @@ object DashcamProbe {
     private val HTTP = listOf(8192 to "/", 8080 to "/?action=stream", 80 to "/?action=stream",
         8081 to "/", 80 to "/stream", 80 to "/live", 8080 to "/")
 
-    fun find(ctx: Context, net: Network?, alive: () -> Boolean, progress: (String) -> Unit): String? {
-        for (h in hosts(ctx, net)) {
+    fun find(ctx: Context, given: Network?, alive: () -> Boolean, progress: (String) -> Unit): String? {
+        for (h in hosts(ctx, given)) {
             if (!alive()) return null
             progress("Đang dò $h…")
+            // Chọn mạng tới được cam (máy có thể có vài Wi‑Fi cùng lúc, mạng đầu tiên chưa chắc là Wi‑Fi cam)
+            val nets = (listOf(given) + DashcamWifi.candidates(ctx, h)).distinct()
+            val net = nets.firstOrNull { n -> (RTSP_PORTS.toList() + HTTP.map { it.first }).distinct().any { portOpen(n, h, it) } }
+                ?: continue
             val ports = HashMap<Int, Boolean>()
             fun isOpen(port: Int) = ports.getOrPut(port) { portOpen(net, h, port) }
             if (RTSP_PORTS.none { isOpen(it) } && HTTP.none { isOpen(it.first) }) continue

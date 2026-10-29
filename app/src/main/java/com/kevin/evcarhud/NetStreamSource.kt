@@ -95,20 +95,29 @@ class NetStreamSource(
     }
 
     // Ưu tiên Wi‑Fi cam do app tự nối (DashcamScan.kt), không có thì Wi‑Fi máy đang nối
+    // Thử lần lượt từng mạng có thể tới cam (máy có thể đang có nhiều Wi‑Fi: cam, Android Auto…)
     private fun connect(host: String, port: Int): Socket {
-        val s = Socket()
-        wifiNetwork()?.let { try { it.bindSocket(s) } catch (e: Throwable) { Log.w(NTAG, "không gắn được vào Wi‑Fi", e) } }
-        try {
-            s.connect(InetSocketAddress(host, port), CONNECT_MS)
-        } catch (e: Throwable) {
-            try { s.close() } catch (_: Throwable) {}
-            throw IllegalStateException("Không kết nối được $host:$port (đã nối Wi‑Fi của camera chưa?)")
+        val nets = DashcamWifi.candidates(context, host)
+        for (n in nets) {
+            val s = Socket()
+            try {
+                n?.bindSocket(s)
+                s.connect(InetSocketAddress(host, port), if (nets.size > 1) 2500 else CONNECT_MS)
+            } catch (e: Throwable) {
+                Log.w(NTAG, "không tới được $host:$port qua $n", e)
+                try { s.close() } catch (_: Throwable) {}
+                continue
+            }
+            s.soTimeout = READ_MS
+            s.tcpNoDelay = true
+            socket = s
+            boundNet = n
+            return s
         }
-        s.soTimeout = READ_MS
-        s.tcpNoDelay = true
-        socket = s
-        return s
+        throw IllegalStateException("Không kết nối được $host:$port (đã nối Wi‑Fi của camera chưa?)")
     }
+
+    @Volatile private var boundNet: Network? = null
 
     private class SetupFailed(msg: String) : Exception(msg)
     @Volatile private var udpClose: (() -> Unit)? = null
@@ -383,7 +392,7 @@ class NetStreamSource(
 
         // Cặp cổng UDP chẵn/lẻ cho RTP/RTCP, gắn vào Wi‑Fi cam
         private fun openUdp() {
-            val net = wifiNetwork()
+            val net = boundNet
             repeat(10) {
                 val a = DatagramSocket(null)
                 try {
