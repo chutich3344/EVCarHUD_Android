@@ -926,18 +926,33 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
             c.drawText(clip(CarLink.street.takeIf { fresh() }.orEmpty().ifBlank { "EVCarHUD" }, right - x - 8f * k, textP), x, top.centerY() + 7f * k, textP)
         }
         // dải xe phía trước: trắng / vàng / đỏ theo mức cảnh báo; cao tốc thì kèm khoảng cách tối thiểu
-        val lead = RectF(r.left + g, top.bottom + 8f * k, r.right - g, top.bottom + 8f * k + 46f * k)
+        val lead = RectF(r.left + g, top.bottom + 8f * k, r.right - g, top.bottom + 8f * k + 66f * k)   // cao hơn cho số to rõ
         c.drawRoundRect(lead, 14f * k, 14f * k, cardP)
         val lm = if (fresh()) CarLink.leadM else Float.NaN
-        mutP.textSize = 13f * k
-        c.drawText(clip((CarLink.leadWhat.ifBlank { "XE PHÍA TRƯỚC" }), lead.width() * 0.45f), lead.left + 16f * k, lead.centerY() + 5f * k, mutP)
-        boldP.textSize = 28f * k
+        mutP.textSize = 16f * k
+        c.drawText(clip((CarLink.leadWhat.ifBlank { "XE PHÍA TRƯỚC" }), lead.width() * 0.45f), lead.left + 16f * k, lead.centerY() - 5f * k, mutP)
+        // nhiệt máy để theo dõi (CPU / pin), đỏ khi nóng
+        val rn = RunnerHolder.get(ctx.applicationContext)
+        val cpu = rn.cpuNowC; val bat = rn.battNowC
+        if (!cpu.isNaN() || !bat.isNaN()) {
+            val tt = buildString {
+                if (!cpu.isNaN()) append("CPU ").append(cpu.roundToInt()).append("°")
+                if (!bat.isNaN()) { if (isNotEmpty()) append("  ·  "); append("Pin ").append(bat.roundToInt()).append("°") }
+            }
+            val hot = (!cpu.isNaN() && cpu >= 70f) || (!bat.isNaN() && bat >= 42f)
+            mutP.textSize = 15f * k
+            val keep = mutP.color
+            mutP.color = if (hot) 0xFFFF7A6B.toInt() else keep
+            c.drawText(clip(tt, lead.width() * 0.45f), lead.left + 16f * k, lead.centerY() + 17f * k, mutP)
+            mutP.color = keep
+        }
+        boldP.textSize = 44f * k
         boldP.color = when { lm.isNaN() -> 0xFF8B96A3.toInt(); CarLink.leadLevel >= 2 -> 0xFFFF5252.toInt(); CarLink.leadLevel == 1 -> 0xFFFFC107.toInt(); else -> 0xFFFFFFFF.toInt() }
         val num = if (lm.isNaN()) "--" else "${lm.roundToInt()} m"
         val gap = if (fresh() && CarLink.leadGap > 0f) "tối thiểu ${CarLink.leadGap.roundToInt()} m" else ""
         val gw = if (gap.isNotEmpty()) mutP.measureText(gap) + 14f * k else 0f
-        c.drawText(num, lead.right - 16f * k - gw - boldP.measureText(num), lead.centerY() + 10f * k, boldP)
-        if (gap.isNotEmpty()) c.drawText(gap, lead.right - 16f * k - mutP.measureText(gap), lead.centerY() + 5f * k, mutP)
+        c.drawText(num, lead.right - 16f * k - gw - boldP.measureText(num), lead.centerY() + 15f * k, boldP)
+        if (gap.isNotEmpty()) c.drawText(gap, lead.right - 16f * k - mutP.measureText(gap), lead.centerY() + 6f * k, mutP)
         boldP.color = 0xFFFFFFFF.toInt()
         // camera
         drawCam(c, RectF(r.left + g, lead.bottom + 8f * k, r.right - g, r.bottom - g), k)

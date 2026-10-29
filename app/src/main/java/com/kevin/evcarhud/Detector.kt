@@ -58,7 +58,7 @@ class YoloDetector(private val context: Context) {
         const val CTX = "yolox_tiny_qnn_ctx.onnx"
         // COCO: 0 người, 1 xe đạp, 2 ô tô, 3 xe máy, 5 xe buýt, 7 xe tải, 9 đèn giao thông, 11 biển STOP
         val CLASSES = intArrayOf(0, 1, 2, 3, 5, 7, 9, 11)
-        const val CONF = 0.25f
+        const val CONF = 0.40f         // 0,25 bắt quá nhiều vật mờ / xa, hộp rối mắt
         const val STOP_CONF = 0.55f    // biển STOP hay bị nhận nhầm (biển đỏ tròn, đèn hậu): ngưỡng cao hơn
         const val LIGHT_CONF = 0.35f
         const val IOU = 0.50f
@@ -317,7 +317,7 @@ class YoloDetector(private val context: Context) {
         val nCls = nc - 4
         for (i in 0 until n) {
             var bestC = -1
-            var bestS = CONF
+            var bestS = 0f   // mỗi lớp tự so với ngưỡng riêng (đèn 0,35 thấp hơn CONF)
             if (map == null) {
                 for (cc in CLASSES) {
                     if (4 + cc >= nc) continue

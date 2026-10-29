@@ -1125,7 +1125,7 @@ object HudRenderer {
         // Trong phố: chỉ vẽ hộp vật trong vòng 50 m cho đỡ rối (vật gần nhất / xe phía trước luôn vẽ; cảnh báo vẫn tính mọi vật)
         fun near(d: Detection) = roadMode != MODE_CITY || d === nearDet || d === leadDet || !(objDist(cam, d) > CITY_BOX_M)
         if (show) {
-            for (d in objs) if (d !in focus && d !== nearDet && near(d)) drawDim(sc, d, cam.scale, k)
+            // Vật ngoài dải đường phía trước không vẽ nữa (trước đây viền mờ: quá nhiều hộp, rối mắt)
             for (d in objs) if ((d in focus || d === nearDet) && d !== leadDet && near(d)) drawFocus(sc, d, cam.scale, k, d === nearDet, stateColor(d))
             if (leadDet != null) drawFocus(sc, leadDet, cam.scale, k, true, stateColor(leadDet))
         }

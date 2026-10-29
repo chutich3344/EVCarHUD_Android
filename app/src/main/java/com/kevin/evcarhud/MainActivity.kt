@@ -206,6 +206,9 @@ class Runner(private val ctx: Context) {
     // Dòng hiệu năng trên HUD (luồng nhiệt ghi, luồng vẽ đọc)
     @Volatile private var perfText = ""
     @Volatile private var perfCpu = Float.NaN
+    // nhiệt hiện tại cho màn hình xe (ô khoảng cách trên Android Auto)
+    @Volatile var cpuNowC = Float.NaN
+    @Volatile var battNowC = Float.NaN
     @Volatile var heatLevel = 0           // mức giảm tải nhiệt hiện tại (trang Bản đồ tự về 2D khi >= 2)
     var warnOn by mutableStateOf(true)        // cảnh báo va chạm (tiếng tít + viền đỏ)
     var alertFlash by mutableStateOf(false)   // pha "sáng" của viền đỏ chớp
@@ -216,6 +219,10 @@ class Runner(private val ctx: Context) {
     var beepVolume by mutableStateOf(100f)    // âm lượng tiếng tít (0-100, tương đối so với âm lượng phương tiện của máy)
     // Phần đáy khung bị capo che (0..0,45): YOLO không nhìn, không cảnh báo, không vẽ đường ở đó
     var hoodCut by mutableStateOf(prefs.getFloat("hoodCut", HOOD_DEFAULT))
+    // Tự tìm mép capo / taplo / hốc HUD khi xe chạy (mặc định bật); chọn mức tay thì tắt
+    var hoodAuto by mutableStateOf(prefs.getBoolean("hoodAuto", true))
+    private val hoodFinder = HoodFinder()
+    private var hoodSeen = false
     var camKind by mutableStateOf(CamKind.values().getOrNull(prefs.getInt("camKind", 0)) ?: CamKind.PHONE)
     var streamUrl by mutableStateOf(prefs.getString("streamUrl", STREAM_DEFAULT) ?: STREAM_DEFAULT)
     // (không còn dùng: ước tính giới hạn theo loại đường OSM; giới hạn giờ chỉ theo nguồn cảnh báo giao thông đã chọn)
@@ -293,7 +300,7 @@ class Runner(private val ctx: Context) {
     private val alertLog = AlertLog(ctx)
     val thermalLog = ThermalLog(ctx)
     fun savePrefs() {
-        prefs.edit().putFloat("hoodCut", hoodCut).putInt("camKind", camKind.ordinal).putString("streamUrl", streamUrl)
+        prefs.edit().putFloat("hoodCut", hoodCut).putBoolean("hoodAuto", hoodAuto).putInt("camKind", camKind.ordinal).putString("streamUrl", streamUrl)
             .putBoolean("alertLog", logOn).putBoolean("limitGuess", limitGuess)
             .putInt("roadMode", roadMode).putBoolean("autoCal", autoCal).putFloat("horizon", horizon)
             .putInt("alertSound", alertSound).putBoolean("collect", collectData)
@@ -492,6 +499,15 @@ class Runner(private val ctx: Context) {
                 val fSrc = (w / 2f) / tan(Math.toRadians(hfov / 2.0)).toFloat()
                 val cx = w * (0.5f + cxShift)
                 val cy = horizon * h
+                // Tự tìm mép capo: chỉ với camera thật, xe chạy từ 15 km/h (cảnh trước mặt phải chuyển động)
+                if (hoodAuto && useCamera && (gps.speedKmh() ?: 0f) >= 15f) {
+                    val hf = hoodFinder.feed(yuv, t0)
+                    if (!hf.isNaN()) {
+                        hoodCut = if (hoodSeen) hoodCut * 0.5f + hf * 0.5f else hf
+                        hoodSeen = true
+                        savePrefs()
+                    }
+                }
 
                 // Lưới suy luận 50 ms cố định theo video (cùng logic cũ); dung sai = nửa chu kỳ khung
                 var ij: InferJob? = null
@@ -623,6 +639,7 @@ class Runner(private val ctx: Context) {
                         heatLevel = held
                         thermalLine = thermalText(ti, held)
                         perfCpu = cpuEma
+                        cpuNowC = cpuEma; battNowC = ti.batteryC
                         perfText = buildString {
                             append("CPU ").append(if (cpuEma.isNaN()) "--" else cpuEma.roundToInt().toString()).append("°C")
                             append(" · PIN ").append(if (ti.batteryC.isNaN()) "--" else ti.batteryC.roundToInt().toString()).append("°C")
@@ -1353,16 +1370,20 @@ private fun RoadModePicker(runner: Runner) {
     }
 }
 
-// Vùng capo che đáy khung: 3 mức 5 / 10 / 15%
-private val HOOD_STEPS = floatArrayOf(0.05f, 0.10f, 0.15f)
+// Vùng capo che đáy khung: tự động hoặc 4 mức tay (máy đặt thấp sau taplo có thể che tới ~35%)
+private val HOOD_STEPS = floatArrayOf(0.05f, 0.15f, 0.25f, 0.35f)
 
 @Composable
 private fun HoodPicker(runner: Runner) {
     Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
         RowTitle("Che vùng capo")
-        val sel = HOOD_STEPS.indices.minByOrNull { abs(HOOD_STEPS[it] - runner.hoodCut) } ?: 2
-        Segmented(listOf("5%", "10%", "15%"), sel) { runner.hoodCut = HOOD_STEPS[it]; runner.savePrefs() }
-        Desc("Phần đáy khung bị capo/taplo che: không nhận diện, không cảnh báo. Chọn mức cho vạch trắng nằm sát mép capo.", top = 6)
+        val sel = if (runner.hoodAuto) 0 else 1 + (HOOD_STEPS.indices.minByOrNull { abs(HOOD_STEPS[it] - runner.hoodCut) } ?: 1)
+        Segmented(listOf("Tự động", "5%", "15%", "25%", "35%"), sel) {
+            if (it == 0) runner.hoodAuto = true else { runner.hoodAuto = false; runner.hoodCut = HOOD_STEPS[it - 1] }
+            runner.savePrefs()
+        }
+        Desc("Phần đáy khung bị capo / taplo / hốc HUD che: không nhận diện, không cảnh báo. Tự động: chạy xe khoảng 20 giây " +
+            "(từ 15 km/h) là app tự đặt vạch trắng sát mép capo (hiện ${(runner.hoodCut * 100).roundToInt()}%).", top = 6)
     }
 }
 
