@@ -18,6 +18,19 @@ private const val CTX_NAME = "model_qnn_ctx.onnx"
 // Nhịp xung NPU (Hexagon): "balanced" chạy xung thấp hơn, mát hơn; đủ cho 10 lần/giây. Runner đặt theo "Tiết kiệm nhiệt"
 @Volatile var htpMode = "sustained_high_performance"
 
+// comma.ai bản nhẹ: driving_supercombo.onnx của openpilot (~61MB, MIT) thay bản lớn 756MB. Cùng đầu vào, đầu ra
+// 2576 số xếp khác thứ tự -> chép về đúng chỗ của bản lớn để Hud.kt / Runner đọc như cũ. Runner đặt theo cài đặt.
+@Volatile var smallComma = true
+private const val SMALL_MODEL = "driving_supercombo.onnx"
+private const val SMALL_CTX = "small_qnn_ctx.onnx"
+private const val SMALL_OUT = 2576
+// (vị trí trong bản nhẹ, vị trí trong bản lớn, độ dài): làn, xác suất làn, mép đường, meta, desire, pose,
+// wide_from_device, road_transform, quỹ đạo, xe dẫn đầu, xác suất xe dẫn đầu, desire_state
+private val SMALL_MAP = intArrayOf(
+    117, 0, 528, 645, 528, 8, 653, 536, 264, 0, 800, 55, 55, 855, 32, 87, 887, 12,
+    99, 899, 6, 105, 905, 12, 1576, 917, 990, 917, 1907, 144, 1061, 2051, 3, 2566, 2054, 8
+)
+
 private val STATE_MAP = listOf(
     "state_img_q" to "next_state_img_q",
     "state_desire_q" to "next_state_desire_q",
@@ -123,6 +136,9 @@ class YuvWarper {
 }
 
 class DrivingEngine(private val context: Context) {
+    val small = smallComma
+    private val modelName = if (small) SMALL_MODEL else MODEL_NAME
+    private val ctxName = if (small) SMALL_CTX else CTX_NAME
     private val env = OrtEnvironment.getEnvironment()
     private var session: OrtSession? = null
     private var prev: OrtSession.Result? = null
@@ -133,7 +149,7 @@ class DrivingEngine(private val context: Context) {
     private val inBuf: ByteBuffer = ByteBuffer.allocateDirect(Preprocess.INPUT_SIZE)
 
     // Có trong assets thì chép ra, không thì tải từ máy chủ (chỉ lần đầu, khi chưa có cache NPU)
-    private fun ensureModelFile(): File = ModelFiles.ensure(context, MODEL_NAME)
+    private fun ensureModelFile(): File = ModelFiles.ensure(context, modelName)
 
     private fun floatTensor(values: FloatArray, shape: LongArray): OnnxTensor {
         val fb = ByteBuffer.allocateDirect(values.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
@@ -170,7 +186,7 @@ class DrivingEngine(private val context: Context) {
     }
 
     fun load(): Long {
-        val ctxFile = File(context.filesDir, CTX_NAME)
+        val ctxFile = File(context.filesDir, ctxName)
         val t0 = SystemClock.elapsedRealtime()
         var created = false
         if (ctxFile.exists()) {
@@ -197,6 +213,8 @@ class DrivingEngine(private val context: Context) {
         prev?.close(); prev = null
         zeros.forEach { it.close() }; zeros.clear()
     }
+
+    fun close() { reset(); try { session?.close() } catch (_: Throwable) {}; session = null }
 
     fun step(yuv: ByteArray): FloatArray {
         val s = session!!
@@ -228,6 +246,10 @@ class DrivingEngine(private val context: Context) {
         val fb = (res.get("outputs").get() as OnnxTensor).floatBuffer
         val arr = FloatArray(fb.remaining())
         fb.get(arr)
-        return arr
+        if (arr.size != SMALL_OUT) return arr
+        val o = FloatArray(2066)
+        var i = 0
+        while (i < SMALL_MAP.size) { System.arraycopy(arr, SMALL_MAP[i], o, SMALL_MAP[i + 1], SMALL_MAP[i + 2]); i += 3 }
+        return o
     }
 }

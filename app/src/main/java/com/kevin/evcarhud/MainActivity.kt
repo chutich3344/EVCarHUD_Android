@@ -197,6 +197,8 @@ class Runner(private val ctx: Context) {
     var ecoMode by mutableStateOf(prefs.getBoolean("ecoMode", true))
     // Tắt comma.ai: chỉ chạy YOLO (mát hơn nhiều), mất dải đường xanh / vạch làn / xe dẫn đầu của model
     var commaOn by mutableStateOf(prefs.getBoolean("commaOn", true))
+    // comma.ai bản nhẹ (61MB) thay bản lớn (756MB): mát hơn nhiều, tải lần đầu nhanh hơn
+    var commaSmall by mutableStateOf(prefs.getBoolean("commaSmall", true))
     // Nhiệt độ pin mục tiêu (°C): bắt đầu giãn nhịp sớm khi pin tiến gần mức này, không chờ Android báo nóng
     var coolTarget by mutableStateOf(prefs.getFloat("coolTarget", 40f).coerceIn(35f, 45f))
     var capFps by mutableStateOf(true)       // phát đúng nhịp thời gian thực của video
@@ -297,7 +299,7 @@ class Runner(private val ctx: Context) {
             .putInt("alertSound", alertSound).putBoolean("collect", collectData)
             .putFloat("camH", camH).putBoolean("reflect", reflect)
             .putInt("navVehicle", navVehicle).putBoolean("miniMap", miniMap)
-            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).putBoolean("cooler", cooler).putBoolean("ecoMode", ecoMode).putBoolean("commaOn", commaOn)
+            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).putBoolean("cooler", cooler).putBoolean("ecoMode", ecoMode).putBoolean("commaOn", commaOn).putBoolean("commaSmall", commaSmall)
             .putBoolean("dimStill", dimStill).apply()
         nav.vehicle = if (navVehicle == 1) "scooter" else "car"
         nav.showMini = miniMap
@@ -1048,6 +1050,9 @@ class Runner(private val ctx: Context) {
                 beeper = bp
                 ModelFiles.onProgress = { status = it }
                 htpMode = if (ecoMode) "balanced" else "sustained_high_performance"   // áp dụng khi nạp model (lần mở app sau)
+                // đổi bản comma: đóng model cũ (trả bộ nhớ NPU) rồi nạp bản mới
+                engine?.let { if (it.small != commaSmall) { it.close(); engine = null } }
+                smallComma = commaSmall
                 if (engine == null) {
                     status = "Đang nạp model lên NPU (không có cache sẽ mất ~13 phút)..."
                     val e = DrivingEngine(ctx)
@@ -1582,6 +1587,10 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             RowLine(); SwitchRow("Dùng comma.ai", "Vẽ dải đường xanh, vạch làn và đoán xe phía trước bằng model comma.ai (nặng, nóng máy). " +
                 "Tắt: chỉ dùng YOLO, máy mát hơn nhiều, vẫn báo xe phía trước / người đi bộ / biển báo.", runner.commaOn) {
                 runner.commaOn = it; runner.savePrefs()
+            }
+            RowLine(); SwitchRow("comma.ai bản nhẹ", "Model openpilot thường (61MB) thay bản lớn (756MB): mát máy hơn nhiều, độ chính xác hơi thấp hơn. " +
+                "Đổi xong bấm dừng rồi chạy lại camera (lần đầu tải và nạp model mới mất vài phút).", runner.commaSmall) {
+                runner.commaSmall = it; runner.savePrefs()
             }
             RowLine(); SwitchRow("Tự giảm tải khi nóng", "Giãn nhịp YOLO và NPU theo nhiệt độ máy.", runner.thermalAuto) { runner.thermalAuto = it }
             RowLine(); SwitchRow("Có sò lạnh", "Bật khi gắn sò lạnh (quạt Peltier) sau lưng máy. App nhắc khi pin xuống dưới 25°C (dễ đọng hơi nước) " +
