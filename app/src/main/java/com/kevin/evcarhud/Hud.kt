@@ -3,6 +3,7 @@ package com.kevin.evcarhud
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Picture
 import android.graphics.PointF
 import android.graphics.LinearGradient
 import android.graphics.RectF
@@ -34,6 +35,13 @@ object HudRenderer {
     @Volatile var camH = 1.22f
     // Chế độ phản chiếu kính lái: nền đen, không vẽ hình camera / làn / hộp, chỉ chữ số và viền cảnh báo (UI lật gương)
     @Volatile var reflect = false
+    // Cho Android Auto: bật thì mỗi khung ghi thêm lớp cảnh riêng (lastScene); số liệu xe phía trước của khung gần nhất
+    @Volatile var wantScene = false
+    @Volatile var lastScene: Picture? = null
+    @Volatile var leadM = Float.NaN
+    @Volatile var leadWhat = ""
+    @Volatile var leadGap = 0f
+    @Volatile var leadLevel = 0
     private const val FOCUS_RANGE_M = 60f   // chỉ làm nổi bật đối tượng trong tầm này (m)
     private const val WARN_MIN_SPEED = 2f      // m/s (~7 km/h): xe đứng yên thì không cảnh báo
     private const val WARN_MIN_DIST = 4f        // m: khoảng cách bám đuôi tối thiểu (chỉ áp dụng khi chạy nhanh)
@@ -838,14 +846,18 @@ object HudRenderer {
         val show = !reflect
         if (reflect) canvas.drawColor(0xFF000000.toInt())
 
+        // Android Auto (cột ADAS): ghi riêng lớp cảnh (đường đi, làn AR, hộp YOLO) thành Picture để xe vẽ lên ảnh camera,
+        // không kèm chữ / biển / thời tiết. Không bật thì vẽ thẳng như cũ.
+        val scenePic = if (wantScene) Picture() else null
+        val sc = scenePic?.beginRecording(w, max(1, (imgH * cam.scale).roundToInt())) ?: canvas
         // Vùng capo: tô tối + vạch mảnh để biết phần nào đang bị bỏ qua; lớp vẽ đường chỉ vẽ phía trên vạch này
         if (show && hoodFrac > 0f) {
-            canvas.drawRect(0f, hoodYd, w.toFloat(), imgH * cam.scale, hoodFill)
+            sc.drawRect(0f, hoodYd, w.toFloat(), imgH * cam.scale, hoodFill)
             hoodLine.strokeWidth = 2f * k
-            canvas.drawLine(0f, hoodYd, w.toFloat(), hoodYd, hoodLine)
+            sc.drawLine(0f, hoodYd, w.toFloat(), hoodYd, hoodLine)
         }
-        canvas.save()
-        canvas.clipRect(0f, 0f, w.toFloat(), hoodYd)
+        sc.save()
+        sc.clipRect(0f, 0f, w.toFloat(), hoodYd)
 
         // Vùng giữa hai vạch gần
         val lane = Array(4) { l ->
@@ -856,7 +868,7 @@ object HudRenderer {
             val a = lane[1][i]; val b = lane[2][i]
             if (a != null && b != null) { left.add(a); right.add(b) }
         }
-        if (show) polygon(canvas, left, right, zoneFill)
+        if (show) polygon(sc, left, right, zoneFill)
 
         // Dải quỹ đạo dự kiến (rộng ~1,8 m); z của quỹ đạo là tương đối nên cộng camH
         val pl = ArrayList<PointF>(); val pr = ArrayList<PointF>()
@@ -871,8 +883,8 @@ object HudRenderer {
         }
         // Sắp rẽ (≤150 m): làn vàng AR + mũi tên chạy theo hướng rẽ thay cho dải xanh; đi thẳng giữ dải xanh
         val arPath = if (show && turn != null && turn.distanceM in 0..AR_RANGE_M) arLanePath(turn.turn, turn.distanceM.toFloat()) else null
-        if (arPath != null) drawArLane(canvas, cam, arPath, turn!!.distanceM.toFloat(), animSec, k)
-        else if (show) polygon(canvas, pl, pr, pathFill)
+        if (arPath != null) drawArLane(sc, cam, arPath, turn!!.distanceM.toFloat(), animSec, k)
+        else if (show) polygon(sc, pl, pr, pathFill)
 
         // Mép đường (trắng)
         edgeLine.strokeWidth = 3f * k
@@ -881,7 +893,7 @@ object HudRenderer {
             val pts = List(33) { i ->
                 proj(cam, X_IDXS[i], o[EDGES + e * 66 + i * 2], o[EDGES + e * 66 + i * 2 + 1])
             }
-            canvas.drawPath(pathOf(pts), edgeLine)
+            sc.drawPath(pathOf(pts), edgeLine)
         }
 
         // Vạch làn
@@ -891,12 +903,12 @@ object HudRenderer {
             if (prob < 0.3f) continue
             val near = l == 1 || l == 2
             val lp = pathOf(lane[l])
-            if (near) { laneGlow.strokeWidth = 16f * k; canvas.drawPath(lp, laneGlow) }
+            if (near) { laneGlow.strokeWidth = 16f * k; sc.drawPath(lp, laneGlow) }
             val paint = if (near) greenLine else farLine
             paint.strokeWidth = (if (near) 5f else 3f) * k
-            canvas.drawPath(lp, paint)
+            sc.drawPath(lp, paint)
         }
-        canvas.restore()
+        sc.restore()
 
         // Xe phía trước (supercombo)
         val leadProb = sigmoid(o[LEAD_PROB])
@@ -1098,10 +1110,12 @@ object HudRenderer {
         // Trong phố: chỉ vẽ hộp vật trong vòng 50 m cho đỡ rối (vật gần nhất / xe phía trước luôn vẽ; cảnh báo vẫn tính mọi vật)
         fun near(d: Detection) = roadMode != MODE_CITY || d === nearDet || d === leadDet || !(objDist(cam, d) > CITY_BOX_M)
         if (show) {
-            for (d in objs) if (d !in focus && d !== nearDet && near(d)) drawDim(canvas, d, cam.scale, k)
-            for (d in objs) if ((d in focus || d === nearDet) && d !== leadDet && near(d)) drawFocus(canvas, d, cam.scale, k, d === nearDet, stateColor(d))
-            if (leadDet != null) drawFocus(canvas, leadDet, cam.scale, k, true, stateColor(leadDet))
+            for (d in objs) if (d !in focus && d !== nearDet && near(d)) drawDim(sc, d, cam.scale, k)
+            for (d in objs) if ((d in focus || d === nearDet) && d !== leadDet && near(d)) drawFocus(sc, d, cam.scale, k, d === nearDet, stateColor(d))
+            if (leadDet != null) drawFocus(sc, leadDet, cam.scale, k, true, stateColor(leadDet))
         }
+
+        if (scenePic != null) { scenePic.endRecording(); canvas.drawPicture(scenePic); lastScene = scenePic }
 
         // Viền cảnh báo: mảnh, bao cả khung hình từ mép trên xuống vạch capo (vùng capo là vùng chết, không tính)
         drawAlertFrame(canvas, w, 0f, hoodYd, k, alertFrame, animSec)
@@ -1142,6 +1156,7 @@ object HudRenderer {
         if (hasLead) label(canvas, "m", midX + numW / 2f + 10f * k, 220f * k, 40f * k, 0xFFDDE4E8.toInt(), Paint.Align.LEFT, medium)
         // Cao tốc: nhắc khoảng cách tối thiểu đang áp dụng
         val g = modeGap(roadMode, warnSpeedKmh, wet)
+        leadM = if (hasLead) lx else Float.NaN; leadWhat = what; leadGap = g; leadLevel = level
         if (g > 0f) label(canvas, "TỐI THIỂU ${g.roundToInt()} m", midX, 262f * k, 20f * k, 0xFFB8C4CC.toInt(), Paint.Align.CENTER, medium)
 
         // Biển giới hạn: chỗ cố định bên phải số khoảng cách (số đổi 1 -> 3 chữ số biển không nhảy).

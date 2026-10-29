@@ -10,7 +10,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.kevin.evcarhud"
+        applicationId = "com.evcarhud.app"
         minSdk = 29
         targetSdk = 37
         // Mỗi lần build trên GitHub tăng số phiên bản (Play Store bắt buộc versionCode mới cho mỗi lần tải lên)
@@ -74,7 +74,7 @@ dependencies {
     // Đọc webcam / camera USB chuẩn UVC qua OTG (Maven Central) cho máy không hỗ trợ camera ngoài qua Camera2
     implementation("com.herohan:UVCAndroid:1.0.13")
     // Trang Bản đồ: bản đồ vector + nhà 3D (ô vector HERE qua Worker)
-    implementation("org.maplibre.gl:android-sdk:11.8.0")
+    implementation("org.maplibre.gl:android-sdk:11.8.8")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // Màn hình trên Android Auto (ô Android Auto của xe)
     implementation("androidx.car.app:app:1.4.0")

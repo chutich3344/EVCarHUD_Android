@@ -68,6 +68,11 @@ class HereNav(private val gps: LocationFallback) {
         private set
     @Volatile var remainText = ""
         private set
+    // Quãng đường / thời gian còn lại (cho thẻ ETA trên Android Auto); -1 = chưa có
+    @Volatile var remainM = -1.0
+        private set
+    @Volatile var remainSec = -1.0
+        private set
     // Dòng báo dưới ô hướng rẽ: sự cố / trạm thu phí / lối ra sắp tới ("" = không có). bannerKind: NOTE_*
     @Volatile var bannerText = ""
         private set
@@ -195,7 +200,7 @@ class HereNav(private val gps: LocationFallback) {
         lastReq = -1_000_000L
         arrivedAt = -1L
         turn = null
-        remainText = ""
+        remainText = ""; remainM = -1.0; remainSec = -1.0
         note = "Đang tính đường tới $name…"
         active = true
     }
@@ -205,7 +210,7 @@ class HereNav(private val gps: LocationFallback) {
         active = false
         route = null
         turn = null
-        remainText = ""
+        remainText = ""; remainM = -1.0; remainSec = -1.0
         note = "Đã dừng chỉ đường"
     }
 
@@ -538,6 +543,7 @@ class HereNav(private val gps: LocationFallback) {
         val remain = max(0.0, r.totalM - along)
         val remainS = r.totalS * remain / max(1.0, r.totalM)
         remainText = "${fmtKm(remain)} · ${max(1, (remainS / 60).roundToInt())} phút"
+        remainM = remain; remainSec = remainS
 
         // Sự cố / trạm phí / lối ra sắp tới: hiện dòng báo, đọc một lần
         var bt0 = ""; var bk = 0
@@ -657,8 +663,9 @@ class HereNav(private val gps: LocationFallback) {
     private val styleBadAt = LongArray(4) { -1_000_000L }
     private var diskWrites = 0
 
+    // Ô bản đồ thường (0, 1) giờ vẽ từ OSM: tên file khác để không lấy lại ô HERE cũ
     private fun tileFile(z: Int, x: Int, y: Int, style: Int): File? =
-        diskDir?.let { File(it, "s${style}_${z}_${x}_$y") }
+        diskDir?.let { File(it, (if (style <= 1) "o" else "s") + "${style}_${z}_${x}_$y") }
 
     private fun tile(z: Int, x: Int, y: Int, style: Int = 0): Bitmap? {
         val key = tileKey(z, x, y, style)
@@ -680,8 +687,18 @@ class HereNav(private val gps: LocationFallback) {
                     // 1) bộ nhớ máy (không tốn lượt gọi)
                     if (f != null && f.exists() && System.currentTimeMillis() - f.lastModified() < DISK_DAYS * 86_400_000L)
                         bmp = BitmapFactory.decodeFile(f.absolutePath, opt)
-                    // 2) tải từ HERE
-                    if (bmp == null) {
+                    // 2) bản đồ thường: tự vẽ từ dữ liệu OSM, không tốn lượt gọi HERE
+                    if (bmp == null && style <= 1) {
+                        bmp = OsmTiles.render(z, x, y, if (style == 0) 256 else 512)
+                        val b = bmp
+                        if (b != null && f != null) {
+                            val bo = java.io.ByteArrayOutputStream()
+                            b.compress(Bitmap.CompressFormat.PNG, 100, bo)
+                            saveTile(f, bo.toByteArray())
+                        }
+                    }
+                    // 3) vệ tinh / giao thông: tải từ HERE
+                    else if (bmp == null) {
                         val sz = if (style == 0) "" else "&size=512"
                         val url = if (style == 3) String.format(Locale.US, "%s/%d/%d/%d/png?size=512", TRAFFIC_TILE, z, x, y)
                         else {

@@ -5,14 +5,14 @@ name: Build APK
 
 on:
   push:
-    branches: [main, claude/hud-layout, claude/project-thread-uxds1h, claude/project-thread-mx3u0m, claude/project-thread-jr7s5f]
+    branches: [main, claude/hud-layout, claude/project-thread-uxds1h, claude/project-thread-mx3u0m, claude/project-thread-jr7s5f, claude/project-thread-9eiayp, claude/project-thread-kpdvqf, claude/project-thread-8euyc5, claude/project-thread-0bc9yh]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: build-apk
+  group: build-apk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -46,6 +46,11 @@ jobs:
           if [ "$GITHUB_REF_NAME" = "claude/project-thread-mx3u0m" ]; then TAG=apk-auto; TITLE="APK thử Android Auto"; fi
           # Bản thử tự tìm cam hành trình Wi‑Fi (có cả Android Auto)
           if [ "$GITHUB_REF_NAME" = "claude/project-thread-jr7s5f" ]; then TAG=apk-dashcam; TITLE="APK thử tự tìm cam hành trình"; fi
+          # Bản mang tên gói chính thức com.evcarhud.app (cài song song với bản cũ)
+          if [ "$GITHUB_REF_NAME" = "claude/project-thread-9eiayp" ]; then TAG=apk-play; TITLE="APK tên gói com.evcarhud.app"; fi
+          # Bản thử YOLOX (giấy phép Apache-2.0) thay YOLOv8
+          if [ "$GITHUB_REF_NAME" = "claude/project-thread-kpdvqf" ]; then TAG=apk-yolox; TITLE="APK thử YOLOX"; fi
+          if [ "$GITHUB_REF_NAME" = "claude/project-thread-0bc9yh" ]; then TAG=apk-aa2; TITLE="APK thử Android Auto giao diện mới"; fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "$NOTE"
           else

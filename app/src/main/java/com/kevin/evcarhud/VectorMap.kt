@@ -7,9 +7,8 @@ import org.maplibre.android.MapLibre
 import org.maplibre.android.module.http.HttpRequestUtil
 import org.maplibre.android.offline.OfflineManager
 
-// Trang Bản đồ vẽ bằng MapLibre (bản đồ vector, có nhà 3D) với dữ liệu ô vector HERE đi qua Worker như mọi lượt gọi khác.
-// Bớt lượt gọi: ô vector chỉ tải tới mức 16 (sát hơn thì phóng to ô sẵn có), mọi ô bản đồ / vệ tinh giữ 30 ngày trong bộ nhớ
-// đệm của MapLibre (200 MB), ô giao thông giữ 5 phút. Phông chữ tên đường nằm sẵn trong app (assets/glyphs), không tải mạng.
+// Trang Bản đồ vẽ bằng MapLibre (bản đồ vector, có nhà 3D). Nền vector từ file OSM tự dựng (OsmTiles.URL_PM), không tốn lượt
+// HERE; ảnh vệ tinh / giao thông HERE đi qua Worker, giữ 30 ngày / 5 phút trong bộ nhớ đệm của MapLibre (200 MB). Phông chữ tên đường nằm sẵn trong app (assets/glyphs), không tải mạng.
 object VectorMap {
     @Volatile private var ready = false
 
@@ -45,8 +44,8 @@ object VectorMap {
         }
     }
 
-    // Kiểu bản đồ đêm (hợp với HUD). Tên lớp / thuộc tính theo ô vector HERE (đã đọc thử ô ở TP.HCM):
-    // roads, road_labels, water, landuse, buildings (height), places
+    // Kiểu bản đồ đêm (hợp với HUD). Nền vector là file PMTiles OSM tự dựng (lược đồ OpenMapTiles), đọc từng đoạn
+    // trên mạng, không tốn lượt HERE; lớp vệ tinh / giao thông vẫn là HERE (bật bằng nút)
     fun style(): String {
         val p = HereApi.PROXY
         return """
@@ -54,50 +53,48 @@ object VectorMap {
  "version": 8,
  "glyphs": "asset://glyphs/{fontstack}/{range}.pbf",
  "sources": {
-  "here": {"type": "vector", "tiles": ["$p/vector/v2/vectortiles/base/mc/{z}/{x}/{y}/omv"], "minzoom": 1, "maxzoom": 16},
+  "osm": {"type": "vector", "url": "pmtiles://${OsmTiles.URL_PM}",
+   "attribution": "© OpenStreetMap contributors © OpenMapTiles"},
   "sat": {"type": "raster", "tiles": ["$p/maps/v3/base/mc/{z}/{x}/{y}/jpeg?style=satellite.day&size=512"], "tileSize": 512, "maxzoom": 19},
   "traffic": {"type": "raster", "tiles": ["$p/traffic.maps/v3/flow/mc/{z}/{x}/{y}/png?size=512"], "tileSize": 512, "maxzoom": 18}
  },
  "layers": [
   {"id": "bg", "type": "background", "paint": {"background-color": "#0a1620"}},
   {"id": "sat", "type": "raster", "source": "sat", "layout": {"visibility": "none"}},
-  {"id": "park", "type": "fill", "source": "here", "source-layer": "landuse",
-   "filter": ["match", ["get", "kind"], ["park", "forest", "wood", "nature_reserve", "garden", "grass", "golf_course", "cemetery", "zoo", "recreation_ground"], true, false],
-   "paint": {"fill-color": "#0f3324", "fill-opacity": 0.85}},
-  {"id": "landuse", "type": "fill", "source": "here", "source-layer": "landuse",
-   "filter": ["match", ["get", "kind"], ["hospital", "commercial", "industrial", "sports_centre", "university", "school", "college", "military"], true, false],
+  {"id": "park", "type": "fill", "source": "osm", "source-layer": "park", "paint": {"fill-color": "#0f3324", "fill-opacity": 0.85}},
+  {"id": "landcover", "type": "fill", "source": "osm", "source-layer": "landcover",
+   "filter": ["match", ["get", "class"], ["grass", "wood", "farmland"], true, false],
+   "paint": {"fill-color": "#0f3324", "fill-opacity": 0.6}},
+  {"id": "landuse", "type": "fill", "source": "osm", "source-layer": "landuse",
+   "filter": ["match", ["get", "class"], ["hospital", "commercial", "industrial", "school", "university", "college", "stadium", "military"], true, false],
    "paint": {"fill-color": "#11212d"}},
-  {"id": "water", "type": "fill", "source": "here", "source-layer": "water",
-   "filter": ["match", ["geometry-type"], ["Polygon", "MultiPolygon"], true, false],
-   "paint": {"fill-color": "#0a2b45"}},
-  {"id": "waterway", "type": "line", "source": "here", "source-layer": "water",
-   "filter": ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false],
+  {"id": "water", "type": "fill", "source": "osm", "source-layer": "water", "paint": {"fill-color": "#0a2b45"}},
+  {"id": "waterway", "type": "line", "source": "osm", "source-layer": "waterway",
    "paint": {"line-color": "#0a2b45", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1, 16, 4]}},
-  {"id": "roads", "type": "line", "source": "here", "source-layer": "roads",
-   "filter": ["match", ["get", "kind"], ["highway", "major_road", "minor_road", "path"], true, false],
+  {"id": "roads", "type": "line", "source": "osm", "source-layer": "transportation",
+   "filter": ["match", ["get", "class"], ["motorway", "trunk", "primary", "secondary", "tertiary", "minor", "service"], true, false],
    "layout": {"line-cap": "round", "line-join": "round"},
    "paint": {
-    "line-color": ["match", ["get", "kind"], "highway", "#6f8fae", "major_road", "#40607c", "minor_road", "#2a4054", "#213341"],
+    "line-color": ["match", ["get", "class"], "motorway", "#6f8fae", ["trunk", "primary"], "#4a6a86", ["secondary", "tertiary"], "#36506a", "#2a4054"],
     "line-width": ["interpolate", ["exponential", 1.6], ["zoom"],
-      10, ["match", ["get", "kind"], "highway", 2.0, "major_road", 1.2, 0.4],
-      14, ["match", ["get", "kind"], "highway", 6.0, "major_road", 4.0, "minor_road", 2.0, 0.8],
-      18, ["match", ["get", "kind"], "highway", 30.0, "major_road", 22.0, "minor_road", 12.0, 4.0]]}},
+      10, ["match", ["get", "class"], "motorway", 2.0, ["trunk", "primary"], 1.2, 0.4],
+      14, ["match", ["get", "class"], "motorway", 6.0, ["trunk", "primary"], 4.0, ["secondary", "tertiary"], 3.0, 1.5],
+      18, ["match", ["get", "class"], "motorway", 30.0, ["trunk", "primary"], 22.0, ["secondary", "tertiary"], 16.0, 10.0]]}},
   {"id": "traffic", "type": "raster", "source": "traffic", "layout": {"visibility": "none"}, "paint": {"raster-opacity": 0.9}},
-  {"id": "bld-flat", "type": "fill", "source": "here", "source-layer": "buildings", "minzoom": 14,
-   "filter": ["all", ["match", ["get", "kind"], ["building", "building_part"], true, false], ["match", ["geometry-type"], ["Polygon", "MultiPolygon"], true, false]],
+  {"id": "bld-flat", "type": "fill", "source": "osm", "source-layer": "building", "minzoom": 14,
    "paint": {"fill-color": "#1a2c3d", "fill-opacity": 0.9}},
-  {"id": "bld-3d", "type": "fill-extrusion", "source": "here", "source-layer": "buildings", "minzoom": 14,
+  {"id": "bld-3d", "type": "fill-extrusion", "source": "osm", "source-layer": "building", "minzoom": 14,
    "layout": {"visibility": "none"},
-   "filter": ["all", ["match", ["get", "kind"], ["building", "building_part"], true, false], ["match", ["geometry-type"], ["Polygon", "MultiPolygon"], true, false]],
    "paint": {"fill-extrusion-color": "#2b3f55", "fill-extrusion-opacity": 0.85,
-    "fill-extrusion-height": ["coalesce", ["get", "height"], 8]}},
-  {"id": "road-labels", "type": "symbol", "source": "here", "source-layer": "road_labels", "minzoom": 13,
-   "layout": {"symbol-placement": "line", "text-field": ["coalesce", ["get", "name:vi"], ["get", "name"]], "text-font": ["Inter-Medium"],
+    "fill-extrusion-height": ["coalesce", ["get", "render_height"], 8]}},
+  {"id": "road-labels", "type": "symbol", "source": "osm", "source-layer": "transportation_name", "minzoom": 13,
+   "layout": {"symbol-placement": "line", "text-field": ["coalesce", ["get", "name:vi"], ["get", "name:latin"]], "text-font": ["Inter-Medium"],
     "text-size": ["interpolate", ["linear"], ["zoom"], 13, 11, 17, 15], "text-max-angle": 30, "text-padding": 4},
    "paint": {"text-color": "#d6e4ef", "text-halo-color": "#0a1620", "text-halo-width": 1.5}},
-  {"id": "places", "type": "symbol", "source": "here", "source-layer": "places", "minzoom": 10,
-   "layout": {"text-field": ["coalesce", ["get", "name:vi"], ["get", "name"]], "text-font": ["Inter-Medium"],
-    "text-size": ["match", ["get", "kind"], "locality", 15, 12], "text-max-width": 8},
+  {"id": "places", "type": "symbol", "source": "osm", "source-layer": "place", "minzoom": 10,
+   "filter": ["match", ["get", "class"], ["city", "town", "suburb", "quarter", "neighbourhood"], true, false],
+   "layout": {"text-field": ["coalesce", ["get", "name:vi"], ["get", "name:latin"]], "text-font": ["Inter-Medium"],
+    "text-size": ["match", ["get", "class"], "city", 15, "town", 14, 12], "text-max-width": 8},
    "paint": {"text-color": "#9fb6c8", "text-halo-color": "#0a1620", "text-halo-width": 1.5}}
  ]
 }
@@ -105,5 +102,5 @@ object VectorMap {
     }
 
     // Lớp bị che khi bật ảnh vệ tinh
-    val BASE_LAYERS = listOf("park", "landuse", "water", "waterway", "roads", "bld-flat", "bld-3d")
+    val BASE_LAYERS = listOf("park", "landcover", "landuse", "water", "waterway", "roads", "bld-flat", "bld-3d")
 }
