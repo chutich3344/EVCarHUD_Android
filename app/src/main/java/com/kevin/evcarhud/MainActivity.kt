@@ -1423,7 +1423,7 @@ private fun DashcamFinder(runner: Runner) {
                             modifier = Modifier.fillMaxWidth().clickable {
                                 picking = false
                                 status = "Đang dò luồng…"
-                                probe(DashcamWifi.current(ctx))
+                                probe(DashcamWifi.network)
                             }.padding(vertical = 12.dp)
                         )
                         Text("Đang dùng Android Auto không dây: nối Wi‑Fi cam trong Cài đặt Android trước (chọn vẫn giữ kết nối), rồi bấm dòng trên.", fontSize = 13.sp, color = DescGray)
