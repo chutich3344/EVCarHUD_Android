@@ -251,13 +251,16 @@ object MapCtl {
     @Volatile var traffic = false
     @Volatile var preview: List<HereNav.RouteOpt> = emptyList()
     @Volatile var sel = 0
+    @Volatile var overviewUntil = 0L        // vừa bắt đầu dẫn đường: xem toàn tuyến tới lúc này
+    fun overview() { overviewUntil = SystemClock.elapsedRealtime() + 60_000L }
     fun zoomBy(d: Int) {
+        overviewUntil = 0L
         if (follow && preview.isEmpty()) { zf = (zf * if (d > 0) 2.0 else 0.5).coerceIn(0.25, 4.0); return }
         val nz = (zoom + d).coerceIn(10, 18)
         if (!cx.isNaN()) { val f = Math.pow(2.0, (nz - zoom).toDouble()); cx *= f; cy *= f }
         zoom = nz
     }
-    fun recenter() { follow = true; zf = 1.0; cx = Double.NaN; cy = Double.NaN }
+    fun recenter() { follow = true; zf = 1.0; cx = Double.NaN; cy = Double.NaN; overviewUntil = 0L }
 }
 
 // Bảng bên phải trên màn xe. Nút ⚡ / ADAS trên thanh bật tắt; chọn trạm / tìm điểm đến -> xem tuyến -> ĐI
@@ -296,7 +299,7 @@ object CarUi {
         if (i !in o.indices) return
         MapCtl.sel = i
         CarLink.nav?.startOpt(i, destLat, destLon, destName)
-        MapCtl.preview = emptyList(); MapCtl.recenter(); mode = NONE
+        MapCtl.preview = emptyList(); MapCtl.recenter(); MapCtl.overview(); mode = NONE
         onChange?.invoke()
     }
 }
@@ -404,7 +407,7 @@ class RouteScreen(ctx: CarContext, private val lat: Double, private val lon: Dou
         return b.setItemList(list.build())
             .setNavigateAction(Action.Builder().setTitle("Đi").setOnClickListener {
                 CarLink.nav?.startOpt(MapCtl.sel, lat, lon, name)
-                MapCtl.preview = emptyList(); MapCtl.recenter()
+                MapCtl.preview = emptyList(); MapCtl.recenter(); MapCtl.overview()
                 screenManager.popToRoot()
             }.build())
             .build()
@@ -584,14 +587,18 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
         else { val f = min(1.0, dt * 5.0); sLat += (raw.first - sLat) * f; sLon += (raw.second - sLon) * f }
         val ll = Pair(sLat, sLon)
         val pv = MapCtl.preview
-        val follow = MapCtl.follow && pv.isEmpty()
+        // vừa chọn tuyến: nhìn toàn tuyến ~1 phút rồi mới bám xe (chạm zoom / về vị trí xe thì bám ngay)
+        val rLa = nav.routeLat(); val rLo = nav.routeLon()
+        val ovw = pv.isEmpty() && rLa != null && rLo != null && rLa.size > 1 && SystemClock.elapsedRealtime() < MapCtl.overviewUntil
+        val fit = if (pv.isNotEmpty()) pv else if (ovw) listOf(HereNav.RouteOpt(rLa!!, rLo!!, 0.0, 0.0, 0.0)) else emptyList()
+        val follow = MapCtl.follow && fit.isEmpty()
         val ts0 = 300f * k
         var z = MapCtl.zoom
         var ts = ts0
-        if (pv.isNotEmpty()) {
+        if (fit.isNotEmpty()) {
             // xem trước tuyến: mức zoom vừa khung
             var mnLa = 90.0; var mxLa = -90.0; var mnLo = 180.0; var mxLo = -180.0
-            for (o in pv) for (i in o.lat.indices) { mnLa = min(mnLa, o.lat[i]); mxLa = max(mxLa, o.lat[i]); mnLo = min(mnLo, o.lon[i]); mxLo = max(mxLo, o.lon[i]) }
+            for (o in fit) for (i in o.lat.indices) { mnLa = min(mnLa, o.lat[i]); mxLa = max(mxLa, o.lat[i]); mnLo = min(mnLo, o.lon[i]); mxLo = max(mxLo, o.lon[i]) }
             val z0 = 16
             val n0 = (1 shl z0).toDouble()
             val spanX = (mxLo - mnLo) / 360.0 * n0 * ts0
@@ -614,9 +621,9 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
         // tâm bản đồ (toạ độ ô)
         val ex = tx(ll.second, n); val ey = ty(ll.first, n)
         val x0: Double; val y0: Double
-        if (pv.isNotEmpty()) {
+        if (fit.isNotEmpty()) {
             var mnX = Double.MAX_VALUE; var mxX = -Double.MAX_VALUE; var mnY = Double.MAX_VALUE; var mxY = -Double.MAX_VALUE
-            for (o in pv) for (i in o.lat.indices) {
+            for (o in fit) for (i in o.lat.indices) {
                 val qx = tx(o.lon[i], n); val qy = ty(o.lat[i], n)
                 mnX = min(mnX, qx); mxX = max(mxX, qx); mnY = min(mnY, qy); mxY = max(mxY, qy)
             }
