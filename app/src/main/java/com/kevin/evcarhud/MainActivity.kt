@@ -190,6 +190,9 @@ class Runner(private val ctx: Context) {
     var thermalAuto by mutableStateOf(true)  // tự giảm tải khi máy nóng
     // Có gắn sò lạnh (quạt Peltier) sau lưng máy: nhắc khi pin lạnh dễ đọng sương, hoặc vẫn nóng (sò mất nguồn)
     var cooler by mutableStateOf(prefs.getBoolean("cooler", false))
+    // Tiết kiệm nhiệt (mặc định bật): chạy mát khi không có sò lạnh. NPU 10 lần/s (15 khi ≥60 km/h, 20 khi có nguy cơ),
+    // YOLO 5 lần/s, điện thoại không hiện (đang cắm Android Auto / tắt màn hình) thì chỉ dựng ảnh 5 hình/s
+    var ecoMode by mutableStateOf(prefs.getBoolean("ecoMode", true))
     // Nhiệt độ pin mục tiêu (°C): bắt đầu giãn nhịp sớm khi pin tiến gần mức này, không chờ Android báo nóng
     var coolTarget by mutableStateOf(prefs.getFloat("coolTarget", 40f).coerceIn(35f, 45f))
     var capFps by mutableStateOf(true)       // phát đúng nhịp thời gian thực của video
@@ -290,7 +293,7 @@ class Runner(private val ctx: Context) {
             .putInt("alertSound", alertSound).putBoolean("collect", collectData)
             .putFloat("camH", camH).putBoolean("reflect", reflect)
             .putInt("navVehicle", navVehicle).putBoolean("miniMap", miniMap)
-            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).putBoolean("cooler", cooler)
+            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).putBoolean("cooler", cooler).putBoolean("ecoMode", ecoMode)
             .putBoolean("dimStill", dimStill).apply()
         nav.vehicle = if (navVehicle == 1) "scooter" else "car"
         nav.showMini = miniMap
@@ -359,6 +362,8 @@ class Runner(private val ctx: Context) {
         return when {
             level >= 4 -> 5
             level >= 2 -> 10
+            ecoMode && driveKmh >= 60f -> 15
+            ecoMode -> 10
             driveKmh >= 60f && level == 0 -> 20
             else -> 15
         }
@@ -942,14 +947,24 @@ class Runner(private val ctx: Context) {
     // model quen với 20 Hz nên chỉ hạ nhịp suy luận ở mức nặng nhất.
     private fun applyThermal(lv: Int) {
         level = lv
-        displayEvery = if (thermalAuto && lv >= 3) 2 else 1
+        displayEvery = when {
+            ecoMode && !phoneVisible() -> 4      // không ai nhìn màn hình điện thoại: đủ cho ô camera trên xe (4 hình/s)
+            thermalAuto && lv >= 3 -> 2
+            else -> 1
+        }
         // YOLO không tắt hẳn ở mức nào: nó là nguồn chính của cảnh báo xe cắt đầu / người đi bộ
         yoloHz = if (!thermalAuto) 10f else when (lv) {
-            0, 1 -> 7f
+            0, 1 -> if (ecoMode) 5f else 7f
             2 -> 4f
             else -> 2.5f
         }
     }
+
+    private fun phoneVisible(): Boolean = try {
+        val i = android.app.ActivityManager.RunningAppProcessInfo()
+        android.app.ActivityManager.getMyMemoryState(i)
+        i.importance <= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+    } catch (_: Throwable) { true }
 
     // Mức giảm tải theo nhiệt độ pin so với mục tiêu (pin nóng chậm hơn chip nên bắt đầu sớm 1,5 °C)
     private fun targetLevel(batteryC: Float): Int {
@@ -973,7 +988,7 @@ class Runner(private val ctx: Context) {
         else if (!i.powerW.isNaN()) sb.append(" | ≈").append("%.1f".format(i.powerW)).append(" W")
         sb.append(" | mức giảm tải ").append(lv)
         sb.append(" | NPU ").append(npuRate()).append(" lần/s | YOLO ").append("%.1f".format(yoloHz)).append(" lần/s")
-        if (displayEvery > 1) sb.append(" | màn hình 10 hình/s")
+        if (displayEvery > 1) sb.append(" | màn hình ").append(20 / displayEvery).append(" hình/s")
         return sb.toString()
     }
 
@@ -1552,7 +1567,11 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
 
         SectionTitle("Hiệu năng")
         SettingsCard {
-            SwitchRow("Tự giảm tải khi nóng", "Giãn nhịp YOLO và NPU theo nhiệt độ máy.", runner.thermalAuto) { runner.thermalAuto = it }
+            SwitchRow("Tiết kiệm nhiệt", "Chạy mát khi không có sò lạnh: AI nhìn đường 10 lần/giây (nhanh hơn khi chạy cao tốc hoặc có nguy cơ va chạm), " +
+                "đang cắm Android Auto hoặc tắt màn hình điện thoại thì điện thoại không vẽ hình. Tắt: AI chạy tối đa, máy nóng nhanh hơn.", runner.ecoMode) {
+                runner.ecoMode = it; runner.savePrefs()
+            }
+            RowLine(); SwitchRow("Tự giảm tải khi nóng", "Giãn nhịp YOLO và NPU theo nhiệt độ máy.", runner.thermalAuto) { runner.thermalAuto = it }
             RowLine(); SwitchRow("Có sò lạnh", "Bật khi gắn sò lạnh (quạt Peltier) sau lưng máy. App nhắc khi pin xuống dưới 25°C (dễ đọng hơi nước) " +
                 "và khi pin vẫn ấm lên (sò mất nguồn hoặc không áp sát). Tắt: nhắc bật điều hoà hướng vào máy như cũ.", runner.cooler) {
                 runner.cooler = it; runner.savePrefs()
