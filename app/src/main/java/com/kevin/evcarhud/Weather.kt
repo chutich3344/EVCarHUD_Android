@@ -3,13 +3,11 @@ package com.kevin.evcarhud
 import android.os.SystemClock
 import android.util.Log
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
-// Thời tiết hiện tại theo vị trí GPS, từ Open-Meteo (miễn phí, không cần khoá API; cần mạng).
+// Thời tiết hiện tại theo vị trí GPS, từ HERE Destination Weather (qua Worker; cần mạng).
 // Tra lại mỗi 15 phút hoặc khi đi xa hơn ~5 km. Không có mạng/GPS thì để trống.
 class WeatherInfo(private val gps: LocationFallback) {
     private val exec = Executors.newSingleThreadExecutor()
@@ -38,22 +36,26 @@ class WeatherInfo(private val gps: LocationFallback) {
         return line
     }
 
+    // HERE Destination Weather qua Worker (key nằm ở máy chủ): trạm quan sát gần nhất, mô tả tiếng Việt
     private fun fetch(lat: Double, lon: Double) {
         try {
             val u = String.format(Locale.US,
-                "https://api.open-meteo.com/v1/forecast?latitude=%.3f&longitude=%.3f&current=temperature_2m,weather_code,is_day",
-                lat, lon)
-            val c = URL(u).openConnection() as HttpURLConnection
+                "%s/weather/v3/report?products=observation&oneObservation=true&location=%.4f,%.4f&lang=vi-VN&units=metric",
+                HereApi.PROXY, lat, lon)
+            val c = HereApi.open(u)
             try {
                 c.connectTimeout = 5000
                 c.readTimeout = 5000
-                if (c.responseCode != 200) return
-                val cur = JSONObject(c.inputStream.bufferedReader().use { it.readText() }).getJSONObject("current")
-                val t = cur.getDouble("temperature_2m").roundToInt()
-                val code = cur.optInt("weather_code", -1)
-                val day = cur.optInt("is_day", 1) == 1
-                line = "${icon(code, day)}  $t°C  ${desc(code)}"
-                wet = code == 45 || code == 48 || code in 51..67 || code in 80..82 || code in 95..99
+                if (c.responseCode != 200) throw java.io.IOException("HTTP ${c.responseCode}")
+                val ob = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                    .getJSONArray("places").getJSONObject(0).getJSONArray("observations").getJSONObject(0)
+                val t = ob.optString("temperature").toDoubleOrNull()?.roundToInt()
+                val name = ob.optString("iconName").lowercase(Locale.US)
+                val day = ob.optString("daylight", "day") != "night"
+                val sky = ob.optString("skyDesc").ifBlank { ob.optString("description") }
+                line = listOfNotNull(icon(name, day), t?.let { "$it°C" }, sky.ifBlank { null }).joinToString("  ")
+                wet = listOf("rain", "shower", "drizzle", "storm", "thunder", "fog", "sleet").any { it in name } ||
+                    (ob.optString("rainFall").toDoubleOrNull() ?: 0.0) > 0.0
             } finally { c.disconnect() }
         } catch (e: Throwable) {
             Log.w("Weather", "không lấy được thời tiết", e)
@@ -61,26 +63,13 @@ class WeatherInfo(private val gps: LocationFallback) {
         }
     }
 
-    // Mã thời tiết WMO
-    private fun icon(c: Int, day: Boolean) = when (c) {
-        0 -> if (day) "☀" else "☾"
-        1, 2 -> "⛅"
-        3, 45, 48 -> "☁"
-        in 51..67, in 80..82 -> "☂"
-        in 95..99 -> "⚡"
+    // iconName của HERE (sunny, mostly_cloudy, light_rain, tstorms, fog...)
+    private fun icon(n: String, day: Boolean) = when {
+        "storm" in n || "thunder" in n -> "⚡"
+        "rain" in n || "shower" in n || "drizzle" in n || "sleet" in n -> "☂"
+        "fog" in n || "haze" in n || "overcast" in n || n == "cloudy" -> "☁"
+        "cloud" in n || "partly" in n || "mostly_sunny" in n || "mostly_clear" in n -> "⛅"
+        "sunny" in n || "clear" in n -> if (day) "☀" else "☾"
         else -> "☁"
-    }
-
-    private fun desc(c: Int) = when (c) {
-        0 -> "Trời quang"
-        1 -> "Ít mây"
-        2 -> "Mây rải rác"
-        3 -> "Nhiều mây"
-        45, 48 -> "Sương mù"
-        in 51..57 -> "Mưa phùn"
-        in 61..65, 66, 67 -> "Mưa"
-        in 80..82 -> "Mưa rào"
-        in 95..99 -> "Dông"
-        else -> ""
     }
 }

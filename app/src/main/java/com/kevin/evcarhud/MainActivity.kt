@@ -322,7 +322,7 @@ class Runner(private val ctx: Context) {
     private var clockMin = -1L
     private var clockStr = ""
     val gps = LocationFallback(ctx)           // dự phòng: tốc độ + tên đường theo GPS điện thoại
-    val weather = WeatherInfo(gps)            // thời tiết hiện tại (Open-Meteo) cho góc trái HUD
+    val weather = WeatherInfo(gps)            // thời tiết hiện tại (HERE Weather) cho góc trái HUD
     val here = HereGeo(gps)
     // Chỉ đường HERE (tìm điểm đến, mũi tên rẽ, bản đồ nhỏ); 0 = ô tô, 1 = xe máy
     val nav = HereNav(gps).apply { diskDir = File(ctx.cacheDir, "tiles") }
@@ -2138,8 +2138,7 @@ private fun AboutDialog(onClose: () -> Unit) {
         "ONNX Runtime" to "MIT License, © Microsoft",
         "Qualcomm AI Engine Direct (QNN)" to "Giấy phép Qualcomm, © Qualcomm Technologies",
         "Dữ liệu bản đồ" to "© OpenStreetMap contributors (ODbL 1.0), © OpenMapTiles",
-        "Dẫn đường, tìm kiếm, giao thông, ảnh vệ tinh" to "© HERE",
-        "Thời tiết" to "Open-Meteo.com (CC BY 4.0)",
+        "Dẫn đường, tìm kiếm, giao thông, ảnh vệ tinh, thời tiết" to "© HERE",
         "MapLibre Native" to "BSD 2-Clause, © MapLibre contributors",
         "UVCAndroid (webcam USB)" to "Apache License 2.0; libuvc BSD, libusb LGPL 2.1",
         "OkHttp" to "Apache License 2.0, © Square",

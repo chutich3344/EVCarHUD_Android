@@ -10,6 +10,7 @@ const HOSTS = {
   "maps": "maps.hereapi.com",                             // ô bản đồ / vệ tinh
   "traffic.maps": "traffic.maps.hereapi.com",             // lớp giao thông
   "vector": "vector.hereapi.com",                         // ô bản đồ vector (trang Bản đồ 3D)
+  "weather": "weather.hereapi.com",                       // thời tiết hiện tại (góc trái HUD)
 };
 const TILES = new Set(["maps", "traffic.maps", "vector"]);
 
