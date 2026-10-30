@@ -417,7 +417,6 @@ object HudRenderer {
         val us = floatArrayOf(-0.3f, len, -0.3f, -0.3f + th, len - th, -0.3f + th)
         val vs = floatArrayOf(wd, 0f, -wd, -wd, 0f, wd)
         val chev = Path()
-        arrRim.strokeWidth = 1.5f * k
         var s = 1.5f; var n = 0; var i = 1
         while (s < tot - 1f) {
             while (i < p.size - 1 && cum[i] < s) i++
@@ -431,11 +430,14 @@ object HudRenderer {
             if (z < 3.6f) continue
             val up = min(1f, abs(dx) * 1.5f)      // 0 = nằm trên đất, 1 = dựng đứng
             val nx = dz; val nz = -dx
+            // dựng đứng: cao ~3,3 m, mảnh hơn, nhấc khỏi mặt đường 0,3 m, trong suốt viền sáng
+            val t2 = th * (1f - 0.55f * up); val l2 = len * (1f - 0.3f * up)
+            us[1] = l2; us[3] = -0.3f + t2; us[4] = l2 - t2; us[5] = -0.3f + t2
             chev.reset()
             var ok = true
             for (j in 0 until 6) {
                 val u = us[j]; val v = vs[j]
-                val q = proj(cam, z + dz * u + nz * v * (1f - up), x + dx * u + nx * v * (1f - up), camH - up * (v + wd) * 0.75f)
+                val q = proj(cam, z + dz * u + nz * v * (1f - up), x + dx * u + nx * v * (1f - up), camH - up * ((v + wd) * 1.25f + 0.3f))
                 if (q == null) { ok = false; break }
                 if (j == 0) chev.moveTo(q.x, q.y) else chev.lineTo(q.x, q.y)
             }
@@ -443,9 +445,12 @@ object HudRenderer {
             chev.close()
             val wave = max(0f, cos(idx * 0.75f - animSec * 6f))
             val far = ((tot - cur) / 10f).coerceIn(0f, 1f)
-            arrFill.color = if (wave > 0.6f) 0xFFC4FFD6.toInt() else 0xFF3EE07A.toInt()
-            arrFill.alpha = (255 * far * (0.55f + 0.45f * wave)).toInt()
-            arrRim.alpha = (200 * far).toInt()
+            val glass = up > 0.5f
+            arrFill.color = if (wave > 0.6f) 0xFFC4FFD6.toInt() else if (glass) 0xFF78F0A0.toInt() else 0xFF3EE07A.toInt()
+            arrFill.alpha = (255 * far * (0.55f + 0.45f * wave) * (if (glass) 0.5f else 1f)).toInt()
+            arrRim.color = if (glass) 0xFFD7FFE4.toInt() else 0xFFC4FFD6.toInt()
+            arrRim.strokeWidth = (if (glass) 2.5f else 1.5f) * k
+            arrRim.alpha = ((if (glass) 242f else 200f) * far).toInt()
             canvas.drawPath(chev, arrFill)
             canvas.drawPath(chev, arrRim)
         }
