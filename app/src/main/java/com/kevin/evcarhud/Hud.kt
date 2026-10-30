@@ -212,6 +212,8 @@ object HudRenderer {
     private val boxLine = stroke(0xFFFFFFFF)
     private val zoneFill = fillP(0x6600A060)
     private val pathFill = fillP(0x7799F0C0)
+    private val bandP = fillP(0xFFFFFFFF)
+    private const val SHIFT_C = 0xA8FFB020          // phần dải đi lấn sang làn bên (chuyển làn): vàng cam
     private val leadFill = fillP(0xFFFFC107)
     private val boxFill = fillP(0xAA202020)
     private val focusFill = fillP(0x26FFC107)
@@ -399,6 +401,42 @@ object HudRenderer {
             arChev.alpha = (242 * fade).toInt()
             canvas.drawPath(chev, arChev)
         }
+    }
+
+    // y của vạch làn l tại khoảng cách x (nội suy theo lưới X_IDXS của model)
+    private fun laneYAt(o: FloatArray, l: Int, x: Float): Float {
+        var i = 1
+        while (i < 32 && X_IDXS[i] < x) i++
+        val f = ((x - X_IDXS[i - 1]) / (X_IDXS[i] - X_IDXS[i - 1])).coerceIn(0f, 1f)
+        val a = o[LANE + l * 66 + (i - 1) * 2]; val b = o[LANE + l * 66 + i * 2]
+        return a + (b - a) * f
+    }
+
+    // trộn màu dải xanh -> vàng cam theo mức lấn làn f (0..1)
+    private fun mixC(f: Float): Int {
+        val a = 0x7799F0C0; val b = SHIFT_C.toInt()
+        var out = 0
+        for (s in intArrayOf(24, 16, 8, 0)) {
+            val v = (((a ushr s) and 0xFF) * (1f - f) + ((b ushr s) and 0xFF) * f).roundToInt().coerceIn(0, 255)
+            out = out or (v shl s)
+        }
+        return out
+    }
+
+    // Dải quỹ đạo: đoạn nằm trong làn mình màu xanh, đoạn lấn sang làn bên chuyển dần sang vàng cam (như khi đổi làn)
+    private fun drawBand(canvas: Canvas, a: List<PointF>, b: List<PointF>, cross: List<Float>) {
+        if (a.size < 2) return
+        val y0 = (a[0].y + b[0].y) / 2f; val y1 = (a.last().y + b.last().y) / 2f
+        if (cross.none { it > 0.05f } || y0 - y1 < 4f) { polygon(canvas, a, b, pathFill); return }
+        val cols = IntArray(a.size); val pos = FloatArray(a.size)
+        var last = 0f
+        for (i in a.indices) {
+            last = max(last, ((y0 - (a[i].y + b[i].y) / 2f) / (y0 - y1)).coerceIn(0f, 1f))
+            pos[i] = last
+            cols[i] = mixC(cross[i])
+        }
+        bandP.shader = LinearGradient(0f, y0, 0f, y1, cols, pos, Shader.TileMode.CLAMP)
+        polygon(canvas, a, b, bandP)
     }
 
     private fun polygon(canvas: Canvas, a: List<PointF>, b: List<PointF>, paint: Paint) {
@@ -886,7 +924,10 @@ object HudRenderer {
         if (show) polygon(sc, left, right, zoneFill)
 
         // Dải quỹ đạo dự kiến (rộng ~1,8 m); z của quỹ đạo là tương đối nên cộng camH
-        val pl = ArrayList<PointF>(); val pr = ArrayList<PointF>()
+        val pl = ArrayList<PointF>(); val pr = ArrayList<PointF>(); val pc = ArrayList<Float>()
+        // chỉ tô màu chuyển làn khi thấy rõ cả hai vạch làn mình và bề rộng làn hợp lý
+        val laneOk = sigmoid(o[LANE_PROB + 3]) > 0.4f && sigmoid(o[LANE_PROB + 5]) > 0.4f &&
+                abs(o[LANE + 132] - o[LANE + 66]) in 2.4f..5f
         for (p in 0 until 33) {
             val b = PLAN + p * 15
             val x = o[b]
@@ -894,12 +935,21 @@ object HudRenderer {
             val z = o[b + 2] + camH
             val a = proj(cam, x, o[b + 1] - 0.9f, z)
             val c = proj(cam, x, o[b + 1] + 0.9f, z)
-            if (a != null && c != null) { pl.add(a); pr.add(c) }
+            if (a != null && c != null) {
+                pl.add(a); pr.add(c)
+                var cr = 0f
+                if (laneOk) {
+                    val y1 = laneYAt(o, 1, x); val y2 = laneYAt(o, 2, x)
+                    val inside = min(o[b + 1] - min(y1, y2), max(y1, y2) - o[b + 1])   // tâm dải cách vạch gần nhất (âm = đã qua vạch)
+                    cr = ((0.6f - inside) / 1.2f).coerceIn(0f, 1f)
+                }
+                pc.add(cr)
+            }
         }
         // Sắp rẽ (≤150 m): làn vàng AR + mũi tên chạy theo hướng rẽ thay cho dải xanh; đi thẳng giữ dải xanh
         val arPath = if (show && turn != null && turn.distanceM in 0..AR_RANGE_M) arLanePath(turn.turn, turn.distanceM.toFloat()) else null
         if (arPath != null) drawArLane(sc, cam, arPath, turn!!.distanceM.toFloat(), animSec, k)
-        else if (show) polygon(sc, pl, pr, pathFill)
+        else if (show) drawBand(sc, pl, pr, pc)
 
         // Mép đường (trắng)
         edgeLine.strokeWidth = 3f * k
