@@ -271,6 +271,9 @@ object HudRenderer {
     private const val AR_RANGE_M = 150
     private val arFill = fillP(0xFFFFC107)
     private val arEdge = stroke(0xFFFFE066)
+    @Volatile var arArrows = true      // kiểu báo rẽ: true = mũi tên xanh, false = làn vàng
+    private val arrFill = fillP(0xFF3EE07A)
+    private val arrRim = stroke(0xFFC4FFD6)
     private val arGlow = stroke(0x40FFD54F)
     private val arDot = fillP(0x80FFE066)
     private val arChev = fillP(0xF2FFFFFF)
@@ -400,6 +403,51 @@ object HudRenderer {
             val fade = ((dist + 30f - z) / 30f).coerceIn(0f, 1f)
             arChev.alpha = (242 * fade).toInt()
             canvas.drawPath(chev, arChev)
+        }
+    }
+
+    // Kiểu báo rẽ "mũi tên xanh": mũi tên to gần bằng bề ngang làn, nối đuôi theo tuyến rẽ, sáng lần lượt chạy tới.
+    // Đoạn đi thẳng nằm trên mặt đường; đoạn quẹo ngang thì dựng đứng lên (camera thấp, nằm sát đất ở chỗ rẽ sẽ bẹp thành vạch)
+    private fun drawArArrows(canvas: Canvas, cam: Cam, p: List<FloatArray>, dist: Float, animSec: Float, k: Float) {
+        if (p.size < 2) return
+        val cum = FloatArray(p.size)
+        for (i in 1 until p.size) cum[i] = cum[i - 1] + kotlin.math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1])
+        val tot = min(cum[p.size - 1], dist + 40f)
+        val sp = 3f; val len = 1.7f; val wd = 1.2f; val th = 1f
+        val us = floatArrayOf(-0.3f, len, -0.3f, -0.3f + th, len - th, -0.3f + th)
+        val vs = floatArrayOf(wd, 0f, -wd, -wd, 0f, wd)
+        val chev = Path()
+        arrRim.strokeWidth = 1.5f * k
+        var s = 1.5f; var n = 0; var i = 1
+        while (s < tot - 1f) {
+            while (i < p.size - 1 && cum[i] < s) i++
+            val a = p[i - 1]; val b = p[i]
+            val seg = (cum[i] - cum[i - 1]).takeIf { it > 0f } ?: 1f
+            val f0 = (s - cum[i - 1]) / seg
+            val x = a[0] + (b[0] - a[0]) * f0; val z = a[1] + (b[1] - a[1]) * f0
+            val dx = (b[0] - a[0]) / seg; val dz = (b[1] - a[1]) / seg
+            val cur = s; val idx = n
+            s += sp; n++
+            if (z < 3.6f) continue
+            val up = min(1f, abs(dx) * 1.5f)      // 0 = nằm trên đất, 1 = dựng đứng
+            val nx = dz; val nz = -dx
+            chev.reset()
+            var ok = true
+            for (j in 0 until 6) {
+                val u = us[j]; val v = vs[j]
+                val q = proj(cam, z + dz * u + nz * v * (1f - up), x + dx * u + nx * v * (1f - up), camH - up * (v + wd) * 0.75f)
+                if (q == null) { ok = false; break }
+                if (j == 0) chev.moveTo(q.x, q.y) else chev.lineTo(q.x, q.y)
+            }
+            if (!ok) continue
+            chev.close()
+            val wave = max(0f, cos(idx * 0.75f - animSec * 6f))
+            val far = ((tot - cur) / 10f).coerceIn(0f, 1f)
+            arrFill.color = if (wave > 0.6f) 0xFFC4FFD6.toInt() else 0xFF3EE07A.toInt()
+            arrFill.alpha = (255 * far * (0.55f + 0.45f * wave)).toInt()
+            arrRim.alpha = (200 * far).toInt()
+            canvas.drawPath(chev, arrFill)
+            canvas.drawPath(chev, arrRim)
         }
     }
 
@@ -994,7 +1042,10 @@ object HudRenderer {
         }
         // Sắp rẽ (≤150 m): làn vàng AR + mũi tên chạy theo hướng rẽ thay cho dải xanh; đi thẳng giữ dải xanh
         val arPath = if (show && turn != null && turn.distanceM in 0..AR_RANGE_M) arLanePath(turn.turn, turn.distanceM.toFloat()) else null
-        if (arPath != null) drawArLane(sc, cam, arPath, turn!!.distanceM.toFloat(), animSec, k)
+        if (arPath != null) {
+            if (arArrows) drawArArrows(sc, cam, arPath, turn!!.distanceM.toFloat(), animSec, k)
+            else drawArLane(sc, cam, arPath, turn!!.distanceM.toFloat(), animSec, k)
+        }
         else if (show) { drawBand(sc, pl, pr, pc); drawPlanChevrons(sc, cam, o, animSec) }
 
         // Mép đường (trắng)

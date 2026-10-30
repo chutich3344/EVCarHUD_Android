@@ -310,7 +310,8 @@ class Runner(private val ctx: Context) {
             .putFloat("camH", camH).putBoolean("reflect", reflect)
             .putInt("navVehicle", navVehicle).putBoolean("miniMap", miniMap)
             .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).putBoolean("cooler", cooler).putBoolean("ecoMode", ecoMode).putBoolean("commaOn", commaOn).putBoolean("commaSmall", commaSmall)
-            .putBoolean("dimStill", dimStill).apply()
+            .putBoolean("dimStill", dimStill).putInt("arStyle", arStyle).apply()
+        HudRenderer.arArrows = arStyle == 1
         nav.vehicle = if (navVehicle == 1) "scooter" else "car"
         nav.showMini = miniMap
         HudRenderer.camH = camH
@@ -327,6 +328,7 @@ class Runner(private val ctx: Context) {
     val nav = HereNav(gps).apply { diskDir = File(ctx.cacheDir, "tiles") }
     var navVehicle by mutableStateOf(prefs.getInt("navVehicle", 0).coerceIn(0, 1))
     var miniMap by mutableStateOf(prefs.getBoolean("miniMap", true))
+    var arStyle by mutableStateOf(prefs.getInt("arStyle", 1).coerceIn(0, 1))   // báo rẽ trên camera: 0 làn vàng, 1 mũi tên xanh
 
     init {
         // Mã cài đặt ngẫu nhiên: máy chủ HERE giới hạn lượt gọi theo mã này (không chứa thông tin cá nhân)
@@ -336,6 +338,7 @@ class Runner(private val ctx: Context) {
         nav.showMini = miniMap
         HudRenderer.camH = camH
         HudRenderer.reflect = reflect
+        HudRenderer.arArrows = arStyle == 1
         CarLink.nav = nav
         CarLink.gps = gps
         // Kiểu chữ HUD tuỳ chọn: đặt file assets/fonts/hud.ttf (ví dụ Exo 2 ExtraLight) để thay Roboto Thin
@@ -1590,6 +1593,11 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             NavRow("Nhạc trên Android Auto", value = if (MediaNow.granted(ctx)) "Đã cho phép" else "Chưa cho phép",
                 desc = "Cho EVCarHUD đọc bài đang phát (YouTube Music, Spotify...) để hiện trên màn hình xe. Bấm để mở Truy cập thông báo.",
                 onClick = { ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
+            RowLine(); Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                RowTitle("Báo rẽ trên camera")
+                Segmented(listOf("Mũi tên xanh", "Làn vàng"), 1 - runner.arStyle) { runner.arStyle = 1 - it; runner.savePrefs() }
+                Desc("Hiện khi còn dưới 150 m tới chỗ rẽ, chạy theo đúng hướng rẽ.", top = 6)
+            }
             RowLine(); SwitchRow("Bản đồ nhỏ", "Tuyến đường dưới đồng hồ tốc độ khi đang chỉ đường, kèm quãng đường và thời gian còn lại.", runner.miniMap) {
                 runner.miniMap = it; runner.savePrefs()
             }
