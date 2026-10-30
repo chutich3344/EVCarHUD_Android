@@ -1535,9 +1535,9 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
     ) {
         var about by remember { mutableStateOf(false) }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Cài đặt", color = white, fontSize = 30.sp, modifier = Modifier.weight(1f).padding(start = 4.dp, top = 10.dp, bottom = 6.dp))
-            // ⓘ: thông tin sản phẩm (tính năng, bản quyền)
-            Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xFF1C222A)).clickable { about = true },
+            Text("Cài đặt", color = white, fontSize = 30.sp, modifier = Modifier.padding(start = 4.dp, top = 10.dp, bottom = 6.dp, end = 12.dp))
+            // ⓘ: thông tin sản phẩm (tính năng, bản quyền); đặt cạnh tiêu đề vì góc phải là nút ⚙/✕
+            Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF1C222A)).clickable { about = true },
                 contentAlignment = Alignment.Center) { Text("i", color = white, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
         }
         if (about) AboutDialog { about = false }
