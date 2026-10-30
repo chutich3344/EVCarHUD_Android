@@ -15,7 +15,7 @@ class HoodFinder {
 
     fun reset() { prev = null; mot.fill(0f); n = 0 }
 
-    // Gọi mỗi khung khi xe đang chạy. Đủ mẫu (~20 giây) thì trả tỉ lệ che (0..0,55), chưa đủ trả NaN
+    // Gọi mỗi khung khi xe đang chạy. Đủ mẫu (~15 giây) thì trả tỉ lệ che (0..0,55), chưa đủ trả NaN
     fun feed(f: YuvFrame, nowMs: Long): Float {
         if (nowMs - lastAt < 250L) return Float.NaN
         lastAt = nowMs
@@ -43,7 +43,7 @@ class HoodFinder {
             for (c in 0 until cols) s += abs(cur[b * cols + c] - p[b * cols + c])
             mot[b] += s / cols
         }
-        if (++n < 80) return Float.NaN
+        if (++n < 60) return Float.NaN
         // mức đổi chuẩn: trung vị các dải giữa khung (đường, xe cộ, nhà cửa)
         val mid = mot.copyOfRange((bands * 0.3f).toInt(), (bands * 0.6f).toInt()).sorted()
         val ref = mid[mid.size / 2]

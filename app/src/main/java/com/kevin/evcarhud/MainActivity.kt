@@ -117,7 +117,9 @@ private const val TAG = "ModelInfo"
 private const val DW = 1024             // độ rộng ảnh hiển thị (≈ độ rộng thật trên màn hình điện thoại)
 private const val REFLECT_CONV_MS = 250L  // chế độ phản chiếu: đổi ảnh camera sang RGB 4 lần/giây
 private const val RING = 6              // bitmap xoay vòng: 2 (hàng đợi) + 1 (đang vẽ) + 1 (đang hiện) + 1 (đang dựng) + dư 1
-private const val GAIN = 0.004f         // tốc độ tự hiệu chỉnh mỗi khung (nhỏ = chậm, mượt)
+private const val CAL_WIN_MS = 15_000L  // tự hiệu chỉnh: gom hướng chuyển động 15 giây rồi chỉnh một lần
+private const val CAL_MIN_N = 30        // tối thiểu số mẫu hợp lệ trong một lượt
+private const val CAL_DAMP = 0.8f       // chỉnh 80% độ lệch đo được mỗi lượt (tránh vọt lố)
 private const val AUTO_SIGN = 1f        // đổi thành -1f nếu chân trời chạy dạt về một phía
 private const val WARMUP = 40           // số lần suy luận đầu không tự chỉnh
 private const val AUTO_MIN_SPEED = 5.5f // m/s (~20 km/h): chỉ tự chỉnh khi đủ nhanh (chạy trong phố cũng chỉnh được)
@@ -503,7 +505,7 @@ class Runner(private val ctx: Context) {
                 if (hoodAuto && useCamera && (gps.speedKmh() ?: 0f) >= 15f) {
                     val hf = hoodFinder.feed(yuv, t0)
                     if (!hf.isNaN()) {
-                        hoodCut = if (hoodSeen) hoodCut * 0.5f + hf * 0.5f else hf
+                        hoodCut = if (hoodSeen) hoodCut * 0.3f + hf * 0.7f else hf
                         hoodSeen = true
                         savePrefs()
                     }
@@ -603,6 +605,7 @@ class Runner(private val ctx: Context) {
             var n = 0
             var dets: List<Detection> = emptyList()
             var speedEma = 0f
+            var calDz = 0f; var calDy = 0f; var calN = 0; var calT0 = 0L
             var lastPoll = 0L
             var lastTLog = 0L
             var held = 0      // mức giảm tải đang áp dụng (tăng ngay, hạ từ từ)
@@ -736,9 +739,17 @@ class Runner(private val ctx: Context) {
                     if (tx > AUTO_MIN_SPEED && abs(yawRate) < 0.03f) {
                         val dz = (tz / tx).coerceIn(-0.2f, 0.2f)
                         val dy = (ty / tx).coerceIn(-0.2f, 0.2f)
-                        horizon = (horizon + GAIN * AUTO_SIGN * job.fSrc * dz / job.h).coerceIn(0.3f, 0.8f)
-                        cxShift = (cxShift + GAIN * AUTO_SIGN * job.fSrc * dy / job.w).coerceIn(-0.15f, 0.15f)
-                        if (n % 300 == 0) prefs.edit().putFloat("horizon", horizon).apply()   // nhớ cho lần chạy sau
+                        calDz += dz; calDy += dy; calN++
+                    }
+                    val nowC = SystemClock.elapsedRealtime()
+                    if (calT0 == 0L) calT0 = nowC
+                    if (nowC - calT0 >= CAL_WIN_MS) {
+                        if (calN >= CAL_MIN_N) {
+                            horizon = (horizon + CAL_DAMP * AUTO_SIGN * job.fSrc * (calDz / calN) / job.h).coerceIn(0.3f, 0.8f)
+                            cxShift = (cxShift + CAL_DAMP * AUTO_SIGN * job.fSrc * (calDy / calN) / job.w).coerceIn(-0.15f, 0.15f)
+                            prefs.edit().putFloat("horizon", horizon).apply()   // nhớ cho lần chạy sau
+                            calDz = 0f; calDy = 0f; calN = 0; calT0 = nowC
+                        } else if (nowC - calT0 >= 4 * CAL_WIN_MS) { calDz = 0f; calDy = 0f; calN = 0; calT0 = nowC }   // quá lâu không đủ mẫu (kẹt xe, cua): làm lại
                     }
                 }
 
@@ -1584,7 +1595,7 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             RowLine(); SliderRow("Đường chân trời", "${(runner.horizon * 100).roundToInt()}%", runner.horizon, 0.3f..0.8f,
                 "30%", "80%", "Tính từ mép trên khung hình. Tự hiệu chỉnh sẽ chỉnh dần khi xe chạy thẳng.",
                 onChange = { runner.horizon = it }, onDone = { runner.savePrefs() })
-            RowLine(); SwitchRow("Tự hiệu chỉnh", "Bật mặc định. Chỉnh dần chân trời và độ lệch ngang khi xe chạy thẳng trên ~20 km/h, nhớ cho lần sau.", runner.autoCal) { runner.autoCal = it; runner.savePrefs() }
+            RowLine(); SwitchRow("Tự hiệu chỉnh", "Bật mặc định. Khi xe chạy thẳng trên ~20 km/h, cứ 15 giây chỉnh chân trời và độ lệch ngang một lần, nhớ cho lần sau.", runner.autoCal) { runner.autoCal = it; runner.savePrefs() }
             RowLine(); SwitchRow("Nhận diện vật thể (YOLO)", "Ô tô, xe máy, người, đèn giao thông, biển STOP.", runner.yoloOn) { runner.yoloOn = it }
             RowLine(); SliderRow("Chiều cao camera", "%.2f m".format(runner.camH), runner.camH, 0.6f..2.2f,
                 "0,6 m", "2,2 m", "Từ mặt đường tới ống kính. Dùng để đo khoảng cách theo hộp nhận diện.",
