@@ -403,6 +403,52 @@ object HudRenderer {
         }
     }
 
+    // Mũi tên trắng chạy dọc dải comma.ai (như làn AR): cách nhau 6 m, trôi tới 9 m/s, mờ dần về xa
+    private val planChev = fillP(0xD0FFFFFF)
+    private fun drawPlanChevrons(canvas: Canvas, cam: Cam, o: FloatArray, animSec: Float) {
+        val n = 33
+        val cum = FloatArray(n)
+        var m = 1
+        for (p in 1 until n) {
+            val b = PLAN + p * 15; val a = PLAN + (p - 1) * 15
+            if (o[a] > 60f) break
+            cum[p] = cum[p - 1] + kotlin.math.hypot(o[b] - o[a], o[b + 1] - o[a + 1])
+            m = p + 1
+        }
+        if (m < 2) return
+        val tot = cum[m - 1]
+        val sp = 6f
+        var s = (animSec * 9f) % sp
+        var i = 1
+        val chev = Path()
+        while (s < tot) {
+            while (i < m - 1 && cum[i] < s) i++
+            val a = PLAN + (i - 1) * 15; val b = PLAN + i * 15
+            val seg = (cum[i] - cum[i - 1]).takeIf { it > 0f } ?: 1f
+            val f = (s - cum[i - 1]) / seg
+            val x = o[a] + (o[b] - o[a]) * f; val y = o[a + 1] + (o[b + 1] - o[a + 1]) * f
+            val z = o[a + 2] + (o[b + 2] - o[a + 2]) * f + camH
+            val dx = (o[b] - o[a]) / seg; val dy = (o[b + 1] - o[a + 1]) / seg
+            s += sp
+            if (x < 3.3f) continue
+            val ny = dx; val nx = -dy     // pháp tuyến ngang
+            val len = 1.3f; val w = 0.7f; val th = 0.5f
+            val tip = floatArrayOf(x + dx * len, y + dy * len)
+            val cl = floatArrayOf(x - dx * 0.2f + nx * w, y - dy * 0.2f + ny * w)
+            val cr = floatArrayOf(x - dx * 0.2f - nx * w, y - dy * 0.2f - ny * w)
+            val pts = listOf(cl, tip, cr,
+                floatArrayOf(cr[0] + dx * th, cr[1] + dy * th),
+                floatArrayOf(tip[0] - dx * th, tip[1] - dy * th),
+                floatArrayOf(cl[0] + dx * th, cl[1] + dy * th)).map { proj(cam, it[0], it[1], z) }
+            if (pts.any { it == null }) continue
+            chev.reset()
+            pts.forEachIndexed { j, q -> if (j == 0) chev.moveTo(q!!.x, q.y) else chev.lineTo(q!!.x, q.y) }
+            chev.close()
+            planChev.alpha = (208 * ((60f - x) / 30f).coerceIn(0f, 1f)).toInt()
+            canvas.drawPath(chev, planChev)
+        }
+    }
+
     // y của vạch làn l tại khoảng cách x (nội suy theo lưới X_IDXS của model)
     private fun laneYAt(o: FloatArray, l: Int, x: Float): Float {
         var i = 1
@@ -949,7 +995,7 @@ object HudRenderer {
         // Sắp rẽ (≤150 m): làn vàng AR + mũi tên chạy theo hướng rẽ thay cho dải xanh; đi thẳng giữ dải xanh
         val arPath = if (show && turn != null && turn.distanceM in 0..AR_RANGE_M) arLanePath(turn.turn, turn.distanceM.toFloat()) else null
         if (arPath != null) drawArLane(sc, cam, arPath, turn!!.distanceM.toFloat(), animSec, k)
-        else if (show) drawBand(sc, pl, pr, pc)
+        else if (show) { drawBand(sc, pl, pr, pc); drawPlanChevrons(sc, cam, o, animSec) }
 
         // Mép đường (trắng)
         edgeLine.strokeWidth = 3f * k
