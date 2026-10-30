@@ -860,25 +860,27 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
         val rn = RunnerHolder.get(ctx.applicationContext)
         fun set(f: () -> Unit) { ctx.mainExecutor.execute { f(); rn.savePrefs() } }
         val rows = listOf(
-            Triple("Lớp giao thông", listOf("Tắt", "Bật"), if (MapCtl.traffic) 1 else 0) to { i: Int -> MapCtl.traffic = i == 1 },
-            Triple("Chế độ đường", listOf("Phố", "Cao tốc", "Mưa"), rn.roadMode) to { i: Int -> set { rn.roadMode = i } },
+            Triple("Cảnh báo va chạm", listOf("Tắt", "Bật"), if (rn.warnOn) 1 else 0) to { i: Int -> set { rn.warnOn = i == 1 } },
             Triple("Âm báo", listOf("Tiếng tít", "Giọng đọc"), rn.alertSound) to { i: Int -> set { rn.alertSound = i } },
+            Triple("Chế độ đường", listOf("Phố", "Cao tốc", "Mưa"), rn.roadMode) to { i: Int -> set { rn.roadMode = i } },
+            Triple("Báo rẽ trên camera", listOf("Mũi tên xanh", "Làn vàng"), 1 - rn.arStyle) to { i: Int -> set { rn.arStyle = 1 - i } },
+            Triple("Lớp giao thông", listOf("Tắt", "Bật"), if (MapCtl.traffic) 1 else 0) to { i: Int -> MapCtl.traffic = i == 1 },
             Triple("Tiết kiệm nhiệt", listOf("Tắt", "Bật"), if (rn.ecoMode) 1 else 0) to { i: Int -> set { rn.ecoMode = i == 1 } },
             Triple("Dùng comma.ai", listOf("Tắt", "Bật"), if (rn.commaOn) 1 else 0) to { i: Int -> set { rn.commaOn = i == 1 } },
         )
         val g = 10f * k
-        val rh = 78f * k
+        val rh = 64f * k      // 7 dòng vừa màn 560
         for ((row, act) in rows) {
             if (y + rh > r.bottom - g) break
             val (name, opts, cur) = row
-            mutP.textSize = 15f * k
-            c.drawText(name, r.left + g + 4f * k, y + 16f * k, mutP)
-            val top = y + 24f * k; val bot = y + rh - 12f * k
+            mutP.textSize = 14f * k
+            c.drawText(name, r.left + g + 4f * k, y + 14f * k, mutP)
+            val top = y + 20f * k; val bot = y + rh - 6f * k
             val cw = (r.width() - 2 * g - (opts.size - 1) * 6f * k) / opts.size
             for ((i, o) in opts.withIndex()) {
                 val cr = RectF(r.left + g + i * (cw + 6f * k), top, r.left + g + i * (cw + 6f * k) + cw, bot)
                 c.drawRoundRect(cr, 10f * k, 10f * k, if (i == cur) chipOn else cardP)
-                textP.textSize = 17f * k
+                textP.textSize = 16f * k
                 c.drawText(o, cr.centerX() - textP.measureText(o) / 2f, cr.centerY() + 6f * k, textP)
                 setR.add(cr to { act(i) })
             }
