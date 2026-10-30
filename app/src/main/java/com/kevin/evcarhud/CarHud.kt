@@ -498,7 +498,7 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
     private val signW = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
     private val signR = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFD62020.toInt(); style = Paint.Style.STROKE }
     private val signT = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF111111.toInt(); typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
-    private val routeP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF3AD6C4.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val routeP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF34E06A.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
     private val egoP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF3D8BFF.toInt() }
     private val haloP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x553D8BFF }
     private val goP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF22C55E.toInt() }
@@ -566,8 +566,11 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
     private var sLat = Double.NaN
     private var sLon = Double.NaN
     private val altP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2B5D8A.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
-    private val chgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF4FD18B.toInt() }
-    private val chgRim = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0F141A.toInt(); style = Paint.Style.STROKE }
+    private val chgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2F80ED.toInt() }
+    private val chgRim = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); style = Paint.Style.STROKE }
+    private val boltP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFE14D.toInt() }
+    private val caseP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0A4D22.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val boltPath = Path()
     private val destP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF14B8A6.toInt() }
 
     private fun drawMap(c: Canvas, r: RectF, k: Float, sideOpen: Boolean) {
@@ -662,17 +665,27 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
             c.drawPath(path, p)
         }
         // trạm sạc trong khung
-        if (z >= 12) for (st in Chargers.load(ctx)) {
+        if (z >= 11) for (st in Chargers.load(ctx)) {
             px(st.lat, st.lon, pt)
             if (!r.contains(pt[0], pt[1])) continue
+            val pr = (if (z >= 14) 13f else 10f) * k
             chgRim.strokeWidth = 2f * k
-            c.drawCircle(pt[0], pt[1], 8f * k, chgP); c.drawCircle(pt[0], pt[1], 8f * k, chgRim)
+            c.drawCircle(pt[0], pt[1], pr, chgP); c.drawCircle(pt[0], pt[1], pr, chgRim)
+            val b = pr * 0.62f
+            boltPath.reset()
+            boltPath.moveTo(pt[0] + 0.15f * b, pt[1] - b); boltPath.lineTo(pt[0] - 0.55f * b, pt[1] + 0.12f * b)
+            boltPath.lineTo(pt[0] - 0.02f * b, pt[1] + 0.12f * b); boltPath.lineTo(pt[0] - 0.15f * b, pt[1] + b)
+            boltPath.lineTo(pt[0] + 0.55f * b, pt[1] - 0.12f * b); boltPath.lineTo(pt[0] + 0.02f * b, pt[1] - 0.12f * b)
+            boltPath.close()
+            c.drawPath(boltPath, boltP)
         }
         // phương án tuyến (xem trước, kèm nhãn số phút) hoặc tuyến đang đi
         if (pv.isNotEmpty()) {
             altP.strokeWidth = 7f * k; routeP.strokeWidth = 8f * k
             for ((i, o) in pv.withIndex()) if (i != MapCtl.sel) line(o.lat, o.lon, altP)
             pv.getOrNull(MapCtl.sel)?.let { o ->
+                caseP.strokeWidth = 12f * k
+                line(o.lat, o.lon, caseP)
                 line(o.lat, o.lon, routeP)
                 px(o.lat.last(), o.lon.last(), pt); c.drawCircle(pt[0], pt[1], 11f * k, destP)
             }
@@ -685,7 +698,8 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
         } else {
             val la = nav.routeLat(); val lo = nav.routeLon()
             if (la != null && lo != null && la.size > 1) {
-                routeP.strokeWidth = 9f * k
+                routeP.strokeWidth = 9f * k; caseP.strokeWidth = 14f * k
+                line(la, lo, caseP)
                 line(la, lo, routeP)
                 px(la.last(), lo.last(), pt); c.drawCircle(pt[0], pt[1], 11f * k, destP)
             }
