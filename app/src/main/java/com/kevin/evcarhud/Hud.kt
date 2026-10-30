@@ -1122,12 +1122,11 @@ object HudRenderer {
             val gd = if (d === leadDet) lx else objDist(cam, d)
             return if (vEgo >= WARN_MIN_SPEED && gd < safeGap) CAUTION_C else SAFE_C
         }
-        // Trong phố: chỉ vẽ hộp vật trong vòng 50 m cho đỡ rối (vật gần nhất / xe phía trước luôn vẽ; cảnh báo vẫn tính mọi vật)
-        fun near(d: Detection) = roadMode != MODE_CITY || d === nearDet || d === leadDet || !(objDist(cam, d) > CITY_BOX_M)
+        // Chỉ vẽ MỘT hộp: vật gần nhất trên đường đi phía trước (hoặc xe dẫn đầu). Cảnh báo vẫn tính mọi vật,
+        // chỉ bớt hộp cho đỡ rối mắt (nhiệt không đổi: YOLO vẫn quét cả khung như cũ)
         if (show) {
-            // Vật ngoài dải đường phía trước không vẽ nữa (trước đây viền mờ: quá nhiều hộp, rối mắt)
-            for (d in objs) if ((d in focus || d === nearDet) && d !== leadDet && near(d)) drawFocus(sc, d, cam.scale, k, d === nearDet, stateColor(d))
-            if (leadDet != null) drawFocus(sc, leadDet, cam.scale, k, true, stateColor(leadDet))
+            val one = nearDet ?: leadDet
+            if (one != null) drawFocus(sc, one, cam.scale, k, true, stateColor(one))
         }
 
         if (scenePic != null) { scenePic.endRecording(); canvas.drawPicture(scenePic); lastScene = scenePic }
