@@ -93,6 +93,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -1532,7 +1533,14 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             .verticalScroll(rememberScrollState())
             .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp)
     ) {
-        Text("Cài đặt", color = white, fontSize = 30.sp, modifier = Modifier.padding(start = 4.dp, top = 10.dp, bottom = 6.dp))
+        var about by remember { mutableStateOf(false) }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Cài đặt", color = white, fontSize = 30.sp, modifier = Modifier.weight(1f).padding(start = 4.dp, top = 10.dp, bottom = 6.dp))
+            // ⓘ: thông tin sản phẩm (tính năng, bản quyền)
+            Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xFF1C222A)).clickable { about = true },
+                contentAlignment = Alignment.Center) { Text("i", color = white, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
+        }
+        if (about) AboutDialog { about = false }
 
         SectionTitle("Nguồn hình")
         SettingsCard {
@@ -2098,4 +2106,56 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+// Thông tin sản phẩm: tính năng + bản quyền các thành phần bên thứ ba (model AI, thư viện, dữ liệu bản đồ, phông chữ)
+@Composable
+private fun AboutDialog(onClose: () -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val ver = remember { try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName } catch (_: Exception) { null } ?: "" }
+    val feats = listOf(
+        "Cảnh báo va chạm bằng camera: khoảng cách xe phía trước, xe cắt đầu, xe trước đã chạy, người đi bộ",
+        "Dải đường dự đoán và vạch làn (comma.ai), đổi màu khi chuyển làn",
+        "Đọc biển giới hạn tốc độ, báo chạy quá tốc độ",
+        "Dẫn đường HERE: tìm địa điểm, 2-3 tuyến, giọng đọc tiếng Việt, làn vàng AR khi sắp rẽ",
+        "Bản đồ tối OpenStreetMap, tên đường và giới hạn tốc độ",
+        "Bản đồ trạm sạc VinFast, lọc theo công suất",
+        "Android Auto: bản đồ toàn màn, trạm sạc, camera ADAS, cài đặt nhanh",
+        "Camera điện thoại, webcam USB hoặc camera hành trình Wi-Fi",
+        "Tiết kiệm nhiệt, tự tìm vùng capo và chân trời",
+    )
+    val lic = listOf(
+        "comma.ai openpilot (model supercombo)" to "MIT License, © comma.ai",
+        "YOLOX (model nhận diện vật thể)" to "Apache License 2.0, © Megvii",
+        "ONNX Runtime" to "MIT License, © Microsoft",
+        "Qualcomm AI Engine Direct (QNN)" to "Giấy phép Qualcomm, © Qualcomm Technologies",
+        "Dữ liệu bản đồ" to "© OpenStreetMap contributors (ODbL 1.0), © OpenMapTiles",
+        "Dẫn đường, tìm kiếm, giao thông, ảnh vệ tinh" to "© HERE",
+        "Thời tiết" to "Open-Meteo.com (CC BY 4.0)",
+        "MapLibre Native" to "BSD 2-Clause, © MapLibre contributors",
+        "UVCAndroid (webcam USB)" to "Apache License 2.0; libuvc BSD, libusb LGPL 2.1",
+        "OkHttp" to "Apache License 2.0, © Square",
+        "AndroidX, Jetpack Compose, CameraX, Android for Cars, Kotlin" to "Apache License 2.0, © Google / JetBrains",
+        "Phông chữ Inter (bản đồ)" to "SIL Open Font License 1.1, © Rasmus Andersson",
+        "Dữ liệu trạm sạc" to "Tổng hợp từ bản đồ công khai, chỉ để tham khảo",
+    )
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("EVCarHUD" + if (ver.isNotBlank()) " $ver" else "") },
+        text = {
+            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                Text("Tính năng", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                for (f in feats) Text("• $f", fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
+                Text("Bản quyền", fontWeight = FontWeight.Bold, fontSize = 17.sp, modifier = Modifier.padding(top = 14.dp))
+                for ((n, l) in lic) {
+                    Text(n, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 6.dp))
+                    Text(l, fontSize = 13.sp, color = Color(0xFF8B96A3))
+                }
+                Text("Ứng dụng chỉ hỗ trợ người lái, không thay thế việc quan sát. Người lái luôn chịu trách nhiệm điều khiển xe.",
+                    fontSize = 13.sp, color = Color(0xFF8B96A3), modifier = Modifier.padding(top = 14.dp))
+                Text("© 2026 EVCarHUD", fontSize = 13.sp, color = Color(0xFF8B96A3), modifier = Modifier.padding(top = 6.dp))
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("Đóng") } }
+    )
 }
