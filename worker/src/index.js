@@ -91,7 +91,7 @@ export default {
     if (ck) {
       if (MEM_SVC.has(service)) { const m = memGet(ck.url); if (m) return m; }
       const hit = await caches.default.match(ck);
-      if (hit) return hit;
+      if (hit) { const hh = new Headers(hit.headers); hh.set("x-cache", "edge"); return new Response(hit.body, { status: hit.status, headers: hh }); }
     }
 
     const r = await fetch(up, { headers: hdr });
