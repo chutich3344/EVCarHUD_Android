@@ -23,7 +23,8 @@ import kotlin.math.sqrt
 //  - cách nhau tối thiểu 8 s
 //  - đang chỉ đường thì MainActivity lấy tên đường + tốc độ từ tuyến đã tải (HereNav), không gọi ở đây
 //  - có bản đồ OSM: tên đường lấy từ OSM trên máy (0 lượt), chỉ hỏi HERE giới hạn tốc độ khi sang đường khác
-//    (tên / loại đường OSM đổi) hoặc đi tiếp 3 km trên cùng đường; không có OSM thì theo quãng đường như cũ
+//    (tên / loại đường OSM đổi) hoặc đi tiếp 8 km trên cùng đường; không có OSM thì theo quãng đường như cũ
+//  - nhớ giới hạn đã hỏi theo (đường OSM + ô ~1 km) trong phiên chạy: quay lại đường cũ thì không hỏi lại
 class HereGeo(private val gps: LocationFallback) {
     private val exec = Executors.newSingleThreadExecutor()
     private val osmExec = Executors.newSingleThreadExecutor()
@@ -83,18 +84,30 @@ class HereGeo(private val gps: LocationFallback) {
                     val turned = !brg.isNaN() && !brg0.isNaN() && angleDiff(brg, brg0) > TURN_DEG && d >= 30.0
                     d >= far || turned
                 }
-                if (go) {
+                val mk = memKey(p.first, p.second)
+                val hit = if (go && osmOk) recall(mk) else null
+                if (hit != null) {
+                    // đã hỏi đường này gần đây: dùng lại, khỏi tốn lượt gọi
+                    at = now; lat0 = p.first; lon0 = p.second; brg0 = brg; hereKey = osmKey
+                    limit = hit; gotAt = now
+                } else if (go) {
                     busy = true
                     at = now
                     lat0 = p.first; lon0 = p.second; brg0 = brg
                     hereKey = osmKey
-                    exec.execute { try { fetch(p.first, p.second) } finally { busy = false } }
+                    val key = if (osmOk) mk else ""
+                    exec.execute { try { fetch(p.first, p.second); if (key.isNotEmpty() && gotAt >= now) remember(key, limit) } finally { busy = false } }
                 }
             }
             if (osmOk && osmName.isNotEmpty()) return osmName
         }
         return if (SystemClock.elapsedRealtime() - gotAt < STALE_MS) road else ""
     }
+
+    private val mem = HashMap<String, Int>()
+    private fun memKey(lat: Double, lon: Double) = osmKey + "|" + (lat * 100).roundToInt() + "," + (lon * 100).roundToInt()
+    @Synchronized private fun remember(k: String, v: Int) { if (mem.size > 2000) mem.clear(); mem[k] = v }
+    @Synchronized private fun recall(k: String): Int? = mem[k]
 
     private fun fetch(lat: Double, lon: Double) {
         try {
@@ -175,6 +188,6 @@ class HereGeo(private val gps: LocationFallback) {
         const val TURN_DEG = 35.0
         const val MIN_GAP_MS = 8_000L
         const val STALE_MS = 600_000L
-        const val OSM_REFRESH_M = 3_000.0
+        const val OSM_REFRESH_M = 8_000.0
     }
 }

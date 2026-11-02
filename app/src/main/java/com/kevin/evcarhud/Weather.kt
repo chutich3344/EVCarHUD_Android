@@ -40,8 +40,9 @@ class WeatherInfo(private val gps: LocationFallback) {
     private fun fetch(lat: Double, lon: Double) {
         try {
             val u = String.format(Locale.US,
-                "%s/weather/v3/report?products=observation&oneObservation=true&location=%.4f,%.4f&lang=vi-VN&units=metric",
-                HereApi.PROXY, lat, lon)
+                "%s/weather/v3/report?products=observation&oneObservation=true&location=%.2f,%.2f&lang=vi-VN&units=metric",
+                // làm tròn theo ô ~5 km: máy cùng khu gửi cùng URL, Worker trả từ bộ nhớ đệm chung (15 phút)
+                HereApi.PROXY, Math.round(lat * 20) / 20.0, Math.round(lon * 20) / 20.0)
             val c = HereApi.open(u)
             try {
                 c.connectTimeout = 5000

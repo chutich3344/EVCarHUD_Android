@@ -586,6 +586,22 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
     private val caseP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0A4D22.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
     private val boltPath = Path()
     private val destP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF14B8A6.toInt() }
+    // kẹt xe: vàng chậm, đỏ kẹt; đoạn đã đi xám mờ; vòng sáng lan ra ở đích
+    private val jamP = arrayOf(
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFB020.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND },
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFF3B30.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND })
+    private val doneP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF3A4658.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val pulseP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF34E06A.toInt(); style = Paint.Style.STROKE }
+    // vẽ dần tuyến (~0,9 s) mỗi khi đổi tuyến xem trước / bắt đầu tuyến mới
+    private var growKey: Any? = null
+    private var growT0 = 0L
+    private fun grow(key: Any?): Float {
+        val now = SystemClock.elapsedRealtime()
+        if (key !== growKey) { growKey = key; growT0 = now }
+        val t = ((now - growT0) / 900f).coerceIn(0f, 1f)
+        val u = 1f - t
+        return 1f - u * u * u
+    }
 
     private fun drawMap(c: Canvas, r: RectF, k: Float, sideOpen: Boolean) {
         c.save()
@@ -678,6 +694,42 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
             for (i in la.indices) { px(la[i], lo[i], pt); if (i == 0) path.moveTo(pt[0], pt[1]) else path.lineTo(pt[0], pt[1]) }
             c.drawPath(path, p)
         }
+        // đoạn từ chỉ số điểm a tới b (số thực: nội suy giữa 2 điểm)
+        fun part(la: DoubleArray, lo: DoubleArray, a: Float, b: Float, p: Paint) {
+            val last = la.size - 1
+            val s0 = a.coerceIn(0f, last.toFloat()); val s1 = b.coerceIn(0f, last.toFloat())
+            if (s1 - s0 < 0.01f) return
+            fun at(s: Float) {
+                val i = min(floor(s.toDouble()).toInt(), last - 1); val f = (s - i).toDouble()
+                px(la[i] + (la[i + 1] - la[i]) * f, lo[i] + (lo[i + 1] - lo[i]) * f, pt)
+            }
+            path.reset()
+            at(s0); path.moveTo(pt[0], pt[1])
+            var i = floor(s0.toDouble()).toInt() + 1
+            while (i < s1) { px(la[i], lo[i], pt); path.lineTo(pt[0], pt[1]); i++ }
+            at(s1); path.lineTo(pt[0], pt[1])
+            c.drawPath(path, p)
+        }
+        // tô kẹt xe trên tuyến, chỉ phần [from, to]
+        fun jams(la: DoubleArray, lo: DoubleArray, at: IntArray, lv: IntArray, from: Float, to: Float, w: Float) {
+            for (q in at.indices) {
+                if (lv[q] <= 0) continue
+                val a = at[q].toFloat(); val b = if (q + 1 < at.size) at[q + 1].toFloat() else (la.size - 1).toFloat()
+                val p = jamP[min(1, lv[q] - 1)]; p.strokeWidth = w
+                part(la, lo, max(a, from), min(b, to), p)
+            }
+        }
+        fun pulse(lat: Double, lon: Double) {
+            px(lat, lon, pt)
+            val f = (SystemClock.elapsedRealtime() % 1400L) / 1400f
+            pulseP.strokeWidth = 3f * k; pulseP.alpha = (200 * (1f - f)).toInt()
+            c.drawCircle(pt[0], pt[1], (11f + 26f * f) * k, pulseP)
+        }
+        // chạy tự do: kẹt xe quanh xe (HERE Traffic Flow, chỉ vàng/đỏ); lớp ô giao thông đang bật thì thôi
+        if (!nav.active && pv.isEmpty() && !MapCtl.traffic) {
+            TrafficFlow.update(ll.first, ll.second, speedNow(), false)
+            for (sg in TrafficFlow.segs) { val p = jamP[min(1, sg.lvl - 1)]; p.strokeWidth = 6f * k; line(sg.lat, sg.lon, p) }
+        }
         // trạm sạc trong khung
         if (z >= 11) for (st in Chargers.load(ctx)) {
             px(st.lat, st.lon, pt)
@@ -698,10 +750,13 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
             altP.strokeWidth = 7f * k; routeP.strokeWidth = 8f * k
             for ((i, o) in pv.withIndex()) if (i != MapCtl.sel) line(o.lat, o.lon, altP)
             pv.getOrNull(MapCtl.sel)?.let { o ->
+                val e = (o.lat.size - 1) * grow(o)
                 caseP.strokeWidth = 12f * k
-                line(o.lat, o.lon, caseP)
-                line(o.lat, o.lon, routeP)
+                part(o.lat, o.lon, 0f, e, caseP)
+                part(o.lat, o.lon, 0f, e, routeP)
+                jams(o.lat, o.lon, o.jamAt, o.jamLvl, 0f, e, 8f * k)
                 px(o.lat.last(), o.lon.last(), pt); c.drawCircle(pt[0], pt[1], 11f * k, destP)
+                pulse(o.lat.last(), o.lon.last())
             }
             for ((i, o) in pv.withIndex()) {
                 if (o.lat.isEmpty()) continue
@@ -712,10 +767,16 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
         } else {
             val la = nav.routeLat(); val lo = nav.routeLon()
             if (la != null && lo != null && la.size > 1) {
-                routeP.strokeWidth = 9f * k; caseP.strokeWidth = 14f * k
-                line(la, lo, caseP)
-                line(la, lo, routeP)
+                // đoạn đã đi xám mờ; đoạn sắp đi vẽ dần từ xe tới đích, tô kẹt xe
+                val i0 = max(0, nav.routeIdx()).toFloat()
+                val e = i0 + (la.size - 1 - i0) * grow(la)
+                routeP.strokeWidth = 9f * k; caseP.strokeWidth = 14f * k; doneP.strokeWidth = 9f * k
+                part(la, lo, 0f, i0, doneP)
+                part(la, lo, i0, e, caseP)
+                part(la, lo, i0, e, routeP)
+                nav.routeJam()?.let { (ja, jl) -> jams(la, lo, ja, jl, i0, e, 9f * k) }
                 px(la.last(), lo.last(), pt); c.drawCircle(pt[0], pt[1], 11f * k, destP)
+                pulse(la.last(), lo.last())
             }
         }
         // xe

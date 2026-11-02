@@ -43,7 +43,9 @@ class HereNav(private val gps: LocationFallback) {
     class Place(val refId: String, val name: String, val address: String, val distKm: Double)
     class Cue(val text: String, val near: Boolean)
     // Một phương án tuyến để chọn trước khi đi (trang Bản đồ): giây chạy (có tính kẹt xe), giây trễ do kẹt xe
-    class RouteOpt(val lat: DoubleArray, val lon: DoubleArray, val totalM: Double, val totalS: Double, val delayS: Double)
+    // jamAt/jamLvl: đoạn kẹt xe trên tuyến (chỉ số điểm bắt đầu, mức 0 thông / 1 chậm / 2 kẹt), từ spans dynamicSpeedInfo
+    class RouteOpt(val lat: DoubleArray, val lon: DoubleArray, val totalM: Double, val totalS: Double, val delayS: Double,
+                   val jamAt: IntArray = IntArray(0), val jamLvl: IntArray = IntArray(0))
 
     // sign: mã hướng rẽ kiểu GraphHopper (giữ như bản VietMap để dùng lại câu đọc và mã Waze cho TurnGuide)
     private class Step(val sign: Int, val exit: Int, val street: String, val start: Int)
@@ -52,7 +54,8 @@ class HereNav(private val gps: LocationFallback) {
     private class Route(val lat: DoubleArray, val lon: DoubleArray, val cum: DoubleArray, val steps: List<Step>,
                         val totalM: Double, val totalS: Double,
                         val spanAt: IntArray, val spanName: Array<String>, val spanKmh: IntArray,
-                        val notes: List<RNote> = emptyList())
+                        val notes: List<RNote> = emptyList(),
+                        val jamAt: IntArray = IntArray(0), val jamLvl: IntArray = IntArray(0))
 
     @Volatile var vehicle = "car"            // car / scooter (xe máy)
     @Volatile var showMini = true
@@ -114,7 +117,7 @@ class HereNav(private val gps: LocationFallback) {
         // Autosuggest bắt buộc có vị trí tham chiếu: chưa có GPS thì lấy giữa Việt Nam
         val p = gps.anyLatLon() ?: (16.0 to 106.0)
         try {
-            val u = String.format(Locale.US, "%s?at=%.6f,%.6f&q=%s&lang=vi-VN&in=countryCode:VNM&limit=8",
+            val u = String.format(Locale.US, "%s?at=%.2f,%.2f&q=%s&lang=vi-VN&in=countryCode:VNM&limit=8",
                 SUGGEST, p.first, p.second, enc(text.trim()))
             val (code, body) = get(u)
             if (code != 200) { note = "Tìm điểm đến: ${httpNote(code)}"; return emptyList() }
@@ -147,7 +150,7 @@ class HereNav(private val gps: LocationFallback) {
         try {
             val p = gps.anyLatLon()
             val u = "$GOFA/v5/Place/AutoComplete?input=" + enc(text.trim()) +
-                (p?.let { String.format(Locale.US, "&location=%.5f,%.5f", it.first, it.second) } ?: "")
+                (p?.let { String.format(Locale.US, "&location=%.2f,%.2f", it.first, it.second) } ?: "")
             val (code, body) = get(u)
             if (code != 200) return null
             val arr = JSONObject(body).optJSONArray("predictions") ?: return null
@@ -213,7 +216,7 @@ class HereNav(private val gps: LocationFallback) {
                     val r = parseRoute(secs) ?: continue
                     var base = 0.0
                     for (j in 0 until secs.length()) base += secs.optJSONObject(j)?.optJSONObject("summary")?.optDouble("baseDuration", 0.0) ?: 0.0
-                    rs.add(r); out.add(RouteOpt(r.lat, r.lon, r.totalM, r.totalS, if (base > 0) max(0.0, r.totalS - base) else 0.0))
+                    rs.add(r); out.add(RouteOpt(r.lat, r.lon, r.totalM, r.totalS, if (base > 0) max(0.0, r.totalS - base) else 0.0, r.jamAt, r.jamLvl))
                 }
                 // HERE trả tuyến chính trước; xếp lại theo thời gian để phương án 1 luôn nhanh nhất
                 val order = out.indices.sortedBy { out[it].totalS }
@@ -307,7 +310,7 @@ class HereNav(private val gps: LocationFallback) {
 
     // Phần thêm vào lượt gọi tính đường. 2: đủ (sự cố, trạm phí, số hiệu đường), 1: tên đường + tốc độ, 0: tối thiểu
     private fun extras(level: Int): String = when (level) {
-        2 -> "&return=polyline,summary,turnByTurnActions,incidents,tolls&spans=names,maxSpeed,routeNumbers,incidents&currency=VND"
+        2 -> "&return=polyline,summary,turnByTurnActions,incidents,tolls&spans=names,maxSpeed,routeNumbers,incidents,dynamicSpeedInfo&currency=VND"
         1 -> "&return=polyline,summary,turnByTurnActions&spans=names,maxSpeed"
         else -> "&return=polyline,summary,turnByTurnActions"
     }
@@ -318,6 +321,7 @@ class HereNav(private val gps: LocationFallback) {
         val steps = ArrayList<Step>()
         val spAt = ArrayList<Int>(); val spName = ArrayList<String>(); val spKmh = ArrayList<Int>()
         val notes = ArrayList<RNote>()
+        val jAt = ArrayList<Int>(); val jLv = ArrayList<Int>()
         var timeS = 0.0
         var lastName = ""
         var lastKmh = 0
@@ -356,6 +360,12 @@ class HereNav(private val gps: LocationFallback) {
             sec.optJSONArray("spans")?.let { sp ->
                 for (i in 0 until sp.length()) {
                     val s = sp.optJSONObject(i) ?: continue
+                    // kẹt xe: tốc độ hiện tại so với tốc độ thông thoáng (bỏ qua đường nhỏ < 15 km/h vốn chậm)
+                    s.optJSONObject("dynamicSpeedInfo")?.let { d ->
+                        val tr = d.optDouble("trafficSpeed", Double.NaN); val bs = d.optDouble("baseSpeed", Double.NaN)
+                        val lv = if (tr.isNaN() || bs.isNaN() || bs < 4.2) 0 else if (tr < bs * 0.4) 2 else if (tr < bs * 0.7) 1 else 0
+                        if (jLv.isEmpty() || jLv.last() != lv) { jAt.add(base + s.optInt("offset", 0)); jLv.add(lv) }
+                    }
                     // maxSpeed (thay speedLimit đã bị HERE bỏ dần) tính bằng m/s, làm tròn về bội số 5 km/h;
                     // đoạn không có dữ liệu hoặc "unlimited" -> 0
                     val ms = s.optDouble("maxSpeed", s.optDouble("speedLimit", Double.NaN))
@@ -429,7 +439,7 @@ class HereNav(private val gps: LocationFallback) {
             if (g != st.sign) steps[k] = Step(g, st.exit, st.street, st.start)
         }
         return Route(lat, lon, cum, steps, cum[n - 1], if (timeS > 0) timeS else cum[n - 1] / 8.0,
-            spAt.toIntArray(), spName.toTypedArray(), spKmh.toIntArray(), notes)
+            spAt.toIntArray(), spName.toTypedArray(), spKmh.toIntArray(), notes, jAt.toIntArray(), jLv.toIntArray())
     }
 
     // ---------- Tên đường + giới hạn tốc độ tại vị trí hiện tại trên tuyến (luồng hiển thị) ----------
@@ -838,6 +848,9 @@ class HereNav(private val gps: LocationFallback) {
     // Tuyến mới nhất (không chờ bám GPS): trang Bản đồ vẽ được cả khi chưa có GPS hoặc camera chưa chạy
     fun routeLat(): DoubleArray? = if (active) route?.lat else null
     fun routeLon(): DoubleArray? = if (active) route?.lon else null
+    // Đoạn kẹt xe của tuyến đang đi (chỉ số điểm bắt đầu, mức 0/1/2) và chỉ số điểm xe đang ở (-1 = chưa bám)
+    fun routeJam(): Pair<IntArray, IntArray>? = if (active) route?.let { Pair(it.jamAt, it.jamLvl) } else null
+    fun routeIdx(): Int = if (active && cur != null && cur === route) idx else -1
     fun egoOnRoute(): Triple<Double, Double, Double>? = if (active && cur != null && idx >= 0) Triple(snapLat, snapLon, heading) else null
 
     fun drawPanel(canvas: Canvas, k: Float, x: Float, y: Float, w: Float, h: Float, speedKmh: Float) {
