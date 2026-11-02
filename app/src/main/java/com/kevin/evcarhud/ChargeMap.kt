@@ -358,12 +358,23 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
         vis("traffic", traffic)
     }
 
-    // Gợi ý địa chỉ khi gõ (dừng gõ 0,45 s mới hỏi HERE: mỗi lần hỏi là 1 lượt gọi)
+    // Gợi ý địa chỉ khi gõ (từ 3 ký tự, dừng gõ 0,6 s mới hỏi: mỗi lần hỏi là 1 lượt gọi GOFA/HERE)
     LaunchedEffect(query, searching) {
-        if (!searching || query.trim().length < 2) { sugg = emptyList(); return@LaunchedEffect }
-        delay(450)
+        if (!searching || query.trim().length < 3) { sugg = emptyList(); return@LaunchedEffect }
+        delay(600)
         val q = query
         sugg = withContext(Dispatchers.IO) { nav.search(q) }
+    }
+    // Chọn gợi ý: kết quả GOFA cần hỏi thêm toạ độ (mạng) nên làm ngoài luồng UI
+    var picking by remember { mutableStateOf<HereNav.Place?>(null) }
+    LaunchedEffect(picking) {
+        val pl = picking ?: return@LaunchedEffect
+        val ll = withContext(Dispatchers.IO) { nav.place(pl.refId) }
+        picking = null
+        if (ll != null) {
+            dest = Triple(ll.first, ll.second, pl.name); query = pl.name
+            searching = false; sugg = emptyList(); sel = null; focus.clearFocus()
+        }
     }
     // Có điểm đến: xin 2–3 tuyến, thu bản đồ cho thấy cả đường đi
     LaunchedEffect(dest, runner.navVehicle) {
@@ -476,13 +487,7 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
                     Column(Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xF50E202C))) {
                         sugg.take(6).forEach { pl ->
                             Row(
-                                Modifier.fillMaxWidth().clickable {
-                                    val ll = nav.place(pl.refId)
-                                    if (ll != null) {
-                                        dest = Triple(ll.first, ll.second, pl.name); query = pl.name
-                                        searching = false; sugg = emptyList(); sel = null; focus.clearFocus()
-                                    }
-                                }.padding(horizontal = 16.dp, vertical = 10.dp),
+                                Modifier.fillMaxWidth().clickable { picking = pl }.padding(horizontal = 16.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(Modifier.weight(1f)) {

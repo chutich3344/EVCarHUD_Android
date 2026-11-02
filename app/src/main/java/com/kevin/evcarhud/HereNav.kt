@@ -110,6 +110,7 @@ class HereNav(private val gps: LocationFallback) {
     // ---------- Tìm điểm đến (gọi ngoài luồng UI) ----------
     fun search(text: String): List<Place> {
         if (text.isBlank()) return emptyList()
+        gofaSearch(text)?.let { note = ""; return it }      // ưu tiên GOFA (địa chỉ Việt Nam đầy đủ hơn), lỗi / hết lượt thì HERE
         // Autosuggest bắt buộc có vị trí tham chiếu: chưa có GPS thì lấy giữa Việt Nam
         val p = gps.anyLatLon() ?: (16.0 to 106.0)
         try {
@@ -141,8 +142,55 @@ class HereNav(private val gps: LocationFallback) {
         }
     }
 
-    // Toạ độ của một kết quả tìm kiếm (Autosuggest đã trả sẵn, không tốn thêm lượt gọi)
-    fun place(refId: String): Pair<Double, Double>? = coords[refId].also { if (it == null) note = "Không có toạ độ của điểm này" }
+    // GOFA Place Search qua Worker (key GOFA nằm ở máy chủ). Hạn mức chung cả app: 10.000 gợi ý + 5.000 chi tiết / tháng
+    private fun gofaSearch(text: String): List<Place>? {
+        try {
+            val p = gps.anyLatLon()
+            val u = "$GOFA/v5/Place/AutoComplete?input=" + enc(text.trim()) +
+                (p?.let { String.format(Locale.US, "&location=%.5f,%.5f", it.first, it.second) } ?: "")
+            val (code, body) = get(u)
+            if (code != 200) return null
+            val arr = JSONObject(body).optJSONArray("predictions") ?: return null
+            val out = ArrayList<Place>()
+            for (i in 0 until min(8, arr.length())) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("place_id", "")
+                if (id.isEmpty()) continue
+                val sf = o.optJSONObject("structured_formatting")
+                val name = sf?.optString("main_text", "").orEmpty().ifEmpty { o.optString("description", "") }
+                val addr = sf?.optString("secondary_text", "").orEmpty()
+                val dm = o.optDouble("distance_meters", Double.NaN)
+                out.add(Place(GOFA_ID + id, name, addr, dm / 1000.0))
+            }
+            return out.ifEmpty { null }
+        } catch (e: Throwable) {
+            Log.w(TAG, "gofa autocomplete", e)
+            return null
+        }
+    }
+
+    // Toạ độ của một kết quả tìm kiếm: HERE trả sẵn; GOFA phải hỏi Detail (1 lượt, nhớ lại cho lần sau). Gọi ngoài luồng UI
+    fun place(refId: String): Pair<Double, Double>? {
+        coords[refId]?.let { return it }
+        if (refId.startsWith(GOFA_ID)) {
+            try {
+                val (code, body) = get("$GOFA/v5/Place/Detail?place_id=" + enc(refId.removePrefix(GOFA_ID)))
+                if (code == 200) {
+                    val loc = JSONObject(body).optJSONObject("result")?.optJSONObject("geometry")?.optJSONObject("location")
+                    val lat = loc?.optDouble("lat", Double.NaN) ?: Double.NaN
+                    val lng = loc?.optDouble("lng", Double.NaN) ?: Double.NaN
+                    if (!lat.isNaN() && !lng.isNaN()) return (lat to lng).also { coords[refId] = it }
+                }
+                note = "Lấy toạ độ: ${httpNote(code)}"
+            } catch (e: Throwable) {
+                Log.w(TAG, "gofa detail", e)
+                note = "Lấy toạ độ: lỗi ${e.javaClass.simpleName}"
+            }
+            return null
+        }
+        note = "Không có toạ độ của điểm này"
+        return null
+    }
 
     // ---------- Xem trước 2–3 tuyến (gọi ngoài luồng UI, 1 lượt gọi HERE) ----------
     // Trả các phương án nhanh nhất trước; chọn xong gọi startOpt(i) để đi theo đúng tuyến đó, không gọi lại HERE
@@ -1037,6 +1085,8 @@ class HereNav(private val gps: LocationFallback) {
     companion object {
         private const val TAG = "HereNav"
         private const val SUGGEST = "${HereApi.PROXY}/autosuggest.search/v1/autosuggest"
+        private const val GOFA = "${HereApi.PROXY}/gofa"
+        private const val GOFA_ID = "gofa:"
         private const val ROUTE = "${HereApi.PROXY}/router/v8/routes"
         private const val TILE = "${HereApi.PROXY}/maps/v3/base/mc"
         private const val TILE_MAX = 160

@@ -344,11 +344,17 @@ class SearchScreen(ctx: CarContext) : Screen(ctx) {
             val sub = listOfNotNull(p.distKm.takeIf { !it.isNaN() }?.let { kmText(it) }, p.address.ifBlank { null }).joinToString(" · ")
             if (sub.isNotEmpty()) row.addText(sub)
             row.setOnClickListener {
-                val c = CarLink.nav?.place(p.refId) ?: return@setOnClickListener
+                val nav = CarLink.nav ?: return@setOnClickListener
                 val nm = p.name.ifBlank { p.address }
-                // Car API 5+: về bản đồ, chọn tuyến ở bảng bên phải; xe cũ: danh sách tuyến của Android Auto
-                if (carContext.carAppApiLevel >= 5) { CarUi.routeTo(c.first, c.second, nm); screenManager.popToRoot() }
-                else screenManager.push(RouteScreen(carContext, c.first, c.second, nm))
+                // kết quả GOFA cần hỏi thêm toạ độ qua mạng: làm ở luồng nền rồi quay lại luồng chính
+                carExec.execute {
+                    val c = nav.place(p.refId) ?: return@execute
+                    main.post {
+                        // Car API 5+: về bản đồ, chọn tuyến ở bảng bên phải; xe cũ: danh sách tuyến của Android Auto
+                        if (carContext.carAppApiLevel >= 5) { CarUi.routeTo(c.first, c.second, nm); screenManager.popToRoot() }
+                        else screenManager.push(RouteScreen(carContext, c.first, c.second, nm))
+                    }
+                }
             }
             list.addItem(row.build())
         }

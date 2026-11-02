@@ -11,6 +11,7 @@ const HOSTS = {
   "traffic.maps": "traffic.maps.hereapi.com",             // lớp giao thông
   "vector": "vector.hereapi.com",                         // ô bản đồ vector (trang Bản đồ 3D)
   "weather": "weather.hereapi.com",                       // thời tiết hiện tại (góc trái HUD)
+  "gofa": "places-api.gofa.vn",                           // GOFA Place Search: tìm địa chỉ Việt Nam (key gửi qua header)
 };
 const TILES = new Set(["maps", "traffic.maps", "vector"]);
 
@@ -45,9 +46,19 @@ export default {
 
     // Giữ nguyên chuỗi tham số của app (không mã hoá lại), bỏ apiKey nếu có, gắn key thật
     let q = url.search.replace(/([?&])apiKey=[^&]*/gi, "$1").replace(/[?&]+$/, "").replace(/\?&+/, "?");
-    const up = "https://" + host + url.pathname.slice(slash) + (q ? q + "&" : "?") + "apiKey=" + encodeURIComponent(env.HERE_KEY);
+    const path = url.pathname.slice(slash);
+    let up, hdr = { "User-Agent": "EVCarHUD-proxy" };
+    if (service === "gofa") {
+      // GOFA: chỉ cho tìm gợi ý + chi tiết, key nằm trong header X-API-Key
+      if (!env.GOFA_KEY) return text(503, "chưa nạp GOFA_KEY");
+      if (path !== "/v5/Place/AutoComplete" && path !== "/v5/Place/Detail") return text(404, "không có dịch vụ này");
+      up = "https://" + host + path + q;
+      hdr["X-API-Key"] = env.GOFA_KEY;
+    } else {
+      up = "https://" + host + path + (q ? q + "&" : "?") + "apiKey=" + encodeURIComponent(env.HERE_KEY);
+    }
 
-    const r = await fetch(up, { headers: { "User-Agent": "EVCarHUD-proxy" } });
+    const r = await fetch(up, { headers: hdr });
     // Chỉ chuyển các header cần thiết (không lộ gì về key)
     const h = new Headers();
     for (const k of ["content-type", "cache-control", "etag", "last-modified", "expires"]) {

@@ -2139,6 +2139,7 @@ private fun AboutDialog(onClose: () -> Unit) {
         "Qualcomm AI Engine Direct (QNN)" to "Giấy phép Qualcomm, © Qualcomm Technologies",
         "Dữ liệu bản đồ" to "© OpenStreetMap contributors (ODbL 1.0), © OpenMapTiles",
         "Dẫn đường, tìm kiếm, giao thông, ảnh vệ tinh, thời tiết" to "© HERE",
+        "Tìm địa chỉ Việt Nam" to "GOFA Place Search, © GOFA",
         "MapLibre Native" to "BSD 2-Clause, © MapLibre contributors",
         "UVCAndroid (webcam USB)" to "Apache License 2.0; libuvc BSD, libusb LGPL 2.1",
         "OkHttp" to "Apache License 2.0, © Square",

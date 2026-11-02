@@ -23,5 +23,7 @@ jobs:
           wranglerVersion: "4"
           secrets: |
             HERE_KEY
+            GOFA_KEY
         env:
           HERE_KEY: ${{ secrets.HERE_KEY }}
+          GOFA_KEY: ${{ secrets.GOFA_KEY }}
