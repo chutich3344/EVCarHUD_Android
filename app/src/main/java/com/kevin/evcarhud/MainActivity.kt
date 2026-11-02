@@ -1444,7 +1444,7 @@ private fun DashcamFinder(runner: Runner) {
         scope.launch {
             val url = withContext(Dispatchers.IO) {
                 if (wasRunning) delay(1500)
-                DashcamProbe.find(ctx, net, { true }) { m -> main.post { status = m } }
+                DashcamProbe.find(ctx, net, { true }) { m -> DashcamLog.add(m); main.post { status = m } }
             }
             busy = false
             if (url != null) {
@@ -1469,6 +1469,14 @@ private fun DashcamFinder(runner: Runner) {
         modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
     ) { Text(if (busy) "Đang dò…" else "Tìm cam & dò luồng", fontSize = 15.sp) }
     status?.let { Desc(it, top = 6) }
+    // Nhật ký kết nối: sao chép rồi dán gửi cho nhà phát triển khi không nối được cam
+    TextButton(onClick = {
+        val txt = "EVCarHUD nhật ký cam (Android ${android.os.Build.VERSION.SDK_INT}, ${android.os.Build.MODEL})\n" +
+            "URL: ${runner.streamUrl}\nMạng lúc này: ${DashcamLog.networks(ctx)}\n" + DashcamLog.text()
+        val cb = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cb.setPrimaryClip(android.content.ClipData.newPlainText("EVCarHUD log", txt))
+        status = "Đã sao chép nhật ký, dán vào tin nhắn gửi nhà phát triển."
+    }) { Text("Sao chép nhật ký kết nối", fontSize = 14.sp) }
 
     if (picking) {
         AlertDialog(
