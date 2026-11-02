@@ -1,0 +1,27 @@
+# comma.ai bản thường của openpilot (driving_supercombo.onnx, ~61MB, giấy phép MIT) thay bản lớn 756MB cho máy mát hơn.
+# Cùng đầu vào với bản lớn; đầu ra xếp khác thứ tự, Engine.kt đổi về thứ tự bản lớn. Đặt vào Release "models" (app tự tải).
+name: Fetch comma small model
+
+on:
+  push:
+    paths: [.github/workflows/fetch-comma-small.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tải và đưa lên Release "models"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OP_COMMIT: 8ba9f4baee799aa3f488079c498429bc3b30bb1f
+          SHA: 65a08adc31d5c456219687d99b7bf5e44d61dae2d49ea67850e76105c7248cce
+        run: |
+          curl -fsSL -o driving_supercombo.onnx \
+            "https://media.githubusercontent.com/media/commaai/openpilot/$OP_COMMIT/openpilot/selfdrive/modeld/models/driving_supercombo.onnx"
+          echo "$SHA  driving_supercombo.onnx" | sha256sum -c
+          ls -lh driving_supercombo.onnx
+          gh release upload models driving_supercombo.onnx --repo "$GITHUB_REPOSITORY" --clobber

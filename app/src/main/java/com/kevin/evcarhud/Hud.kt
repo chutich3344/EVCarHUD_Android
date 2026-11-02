@@ -73,6 +73,21 @@ object HudRenderer {
 
     private fun sigmoid(x: Float) = 1f / (1f + exp(-x))
 
+    // Tắt comma.ai (tiết kiệm nhiệt): đầu ra giả "đường thẳng" cho HUD. Làn ±1,8 m, quỹ đạo thẳng, vạch làn và
+    // mép đường ẩn, không có xe dẫn đầu của model: khoảng cách và cảnh báo va chạm lấy hoàn toàn từ hộp YOLO.
+    fun straightOut(): FloatArray {
+        val o = FloatArray(2200)
+        val ys = floatArrayOf(-5.4f, -1.8f, 1.8f, 5.4f)
+        for (l in 0 until 4) {
+            for (i in 0 until 33) { o[LANE + l * 66 + i * 2] = ys[l]; o[LANE + l * 66 + i * 2 + 1] = camH }
+            o[LANE_PROB + l * 2 + 1] = -10f
+        }
+        for (e in 0 until 2) for (i in 0 until 33) { o[EDGES + e * 66 + i * 2] = if (e == 0) -1000f else 1000f; o[EDGES + e * 66 + i * 2 + 1] = camH }
+        for (p in 0 until 33) o[PLAN + p * 15] = X_IDXS[p]
+        o[LEAD_PROB] = -10f
+        return o
+    }
+
     // Chi tiết lần đánh giá nguy cơ gần nhất (cho nhật ký cảnh báo); chỉ luồng hiển thị ghi/đọc
     var riskDist = Float.NaN      // m, vật cản gần nhất trên quỹ đạo
         private set
@@ -197,6 +212,8 @@ object HudRenderer {
     private val boxLine = stroke(0xFFFFFFFF)
     private val zoneFill = fillP(0x6600A060)
     private val pathFill = fillP(0x7799F0C0)
+    private val bandP = fillP(0xFFFFFFFF)
+    private const val SHIFT_C = 0xA8FFB020          // phần dải đi lấn sang làn bên (chuyển làn): vàng cam
     private val leadFill = fillP(0xFFFFC107)
     private val boxFill = fillP(0xAA202020)
     private val focusFill = fillP(0x26FFC107)
@@ -254,6 +271,9 @@ object HudRenderer {
     private const val AR_RANGE_M = 150
     private val arFill = fillP(0xFFFFC107)
     private val arEdge = stroke(0xFFFFE066)
+    @Volatile var arArrows = true      // kiểu báo rẽ: true = mũi tên xanh, false = làn vàng
+    private val arrFill = fillP(0xFF3EE07A)
+    private val arrRim = stroke(0xFFC4FFD6)
     private val arGlow = stroke(0x40FFD54F)
     private val arDot = fillP(0x80FFE066)
     private val arChev = fillP(0xF2FFFFFF)
@@ -384,6 +404,138 @@ object HudRenderer {
             arChev.alpha = (242 * fade).toInt()
             canvas.drawPath(chev, arChev)
         }
+    }
+
+    // Kiểu báo rẽ "mũi tên xanh": mũi tên to gần bằng bề ngang làn, nối đuôi theo tuyến rẽ, sáng lần lượt chạy tới.
+    // Đoạn đi thẳng nằm trên mặt đường; đoạn quẹo ngang thì dựng đứng lên (camera thấp, nằm sát đất ở chỗ rẽ sẽ bẹp thành vạch)
+    private fun drawArArrows(canvas: Canvas, cam: Cam, p: List<FloatArray>, dist: Float, animSec: Float, k: Float) {
+        if (p.size < 2) return
+        val cum = FloatArray(p.size)
+        for (i in 1 until p.size) cum[i] = cum[i - 1] + kotlin.math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1])
+        val tot = min(cum[p.size - 1], dist + 40f)
+        val sp = 3f; val len = 1.7f; val wd = 1.2f; val th = 1f
+        val us = floatArrayOf(-0.3f, len, -0.3f, -0.3f + th, len - th, -0.3f + th)
+        val vs = floatArrayOf(wd, 0f, -wd, -wd, 0f, wd)
+        val chev = Path()
+        var s = 1.5f; var n = 0; var i = 1
+        while (s < tot - 1f) {
+            while (i < p.size - 1 && cum[i] < s) i++
+            val a = p[i - 1]; val b = p[i]
+            val seg = (cum[i] - cum[i - 1]).takeIf { it > 0f } ?: 1f
+            val f0 = (s - cum[i - 1]) / seg
+            val x = a[0] + (b[0] - a[0]) * f0; val z = a[1] + (b[1] - a[1]) * f0
+            val dx = (b[0] - a[0]) / seg; val dz = (b[1] - a[1]) / seg
+            val cur = s; val idx = n
+            s += sp; n++
+            if (z < 3.6f) continue
+            val up = min(1f, abs(dx) * 1.5f)      // 0 = nằm trên đất, 1 = dựng đứng
+            val nx = dz; val nz = -dx
+            // dựng đứng: cao ~3,3 m, mảnh hơn, nhấc khỏi mặt đường 0,3 m, trong suốt viền sáng
+            val t2 = th * (1f - 0.55f * up); val l2 = len * (1f - 0.3f * up)
+            us[1] = l2; us[3] = -0.3f + t2; us[4] = l2 - t2; us[5] = -0.3f + t2
+            chev.reset()
+            var ok = true
+            for (j in 0 until 6) {
+                val u = us[j]; val v = vs[j]
+                val q = proj(cam, z + dz * u + nz * v * (1f - up), x + dx * u + nx * v * (1f - up), camH - up * ((v + wd) * 1.25f + 0.3f))
+                if (q == null) { ok = false; break }
+                if (j == 0) chev.moveTo(q.x, q.y) else chev.lineTo(q.x, q.y)
+            }
+            if (!ok) continue
+            chev.close()
+            val wave = max(0f, cos(idx * 0.75f - animSec * 6f))
+            val far = ((tot - cur) / 10f).coerceIn(0f, 1f)
+            val glass = up > 0.5f
+            arrFill.color = if (wave > 0.6f) 0xFFC4FFD6.toInt() else if (glass) 0xFF78F0A0.toInt() else 0xFF3EE07A.toInt()
+            arrFill.alpha = (255 * far * (0.55f + 0.45f * wave) * (if (glass) 0.5f else 1f)).toInt()
+            arrRim.color = if (glass) 0xFFD7FFE4.toInt() else 0xFFC4FFD6.toInt()
+            arrRim.strokeWidth = (if (glass) 2.5f else 1.5f) * k
+            arrRim.alpha = ((if (glass) 242f else 200f) * far).toInt()
+            canvas.drawPath(chev, arrFill)
+            canvas.drawPath(chev, arrRim)
+        }
+    }
+
+    // Mũi tên trắng chạy dọc dải comma.ai (như làn AR): cách nhau 6 m, trôi tới 9 m/s, mờ dần về xa
+    private val planChev = fillP(0xD0FFFFFF)
+    private fun drawPlanChevrons(canvas: Canvas, cam: Cam, o: FloatArray, animSec: Float) {
+        val n = 33
+        val cum = FloatArray(n)
+        var m = 1
+        for (p in 1 until n) {
+            val b = PLAN + p * 15; val a = PLAN + (p - 1) * 15
+            if (o[a] > 60f) break
+            cum[p] = cum[p - 1] + kotlin.math.hypot(o[b] - o[a], o[b + 1] - o[a + 1])
+            m = p + 1
+        }
+        if (m < 2) return
+        val tot = cum[m - 1]
+        val sp = 6f
+        var s = (animSec * 9f) % sp
+        var i = 1
+        val chev = Path()
+        while (s < tot) {
+            while (i < m - 1 && cum[i] < s) i++
+            val a = PLAN + (i - 1) * 15; val b = PLAN + i * 15
+            val seg = (cum[i] - cum[i - 1]).takeIf { it > 0f } ?: 1f
+            val f = (s - cum[i - 1]) / seg
+            val x = o[a] + (o[b] - o[a]) * f; val y = o[a + 1] + (o[b + 1] - o[a + 1]) * f
+            val z = o[a + 2] + (o[b + 2] - o[a + 2]) * f + camH
+            val dx = (o[b] - o[a]) / seg; val dy = (o[b + 1] - o[a + 1]) / seg
+            s += sp
+            if (x < 3.3f) continue
+            val ny = dx; val nx = -dy     // pháp tuyến ngang
+            val len = 1.3f; val w = 0.7f; val th = 0.5f
+            val tip = floatArrayOf(x + dx * len, y + dy * len)
+            val cl = floatArrayOf(x - dx * 0.2f + nx * w, y - dy * 0.2f + ny * w)
+            val cr = floatArrayOf(x - dx * 0.2f - nx * w, y - dy * 0.2f - ny * w)
+            val pts = listOf(cl, tip, cr,
+                floatArrayOf(cr[0] + dx * th, cr[1] + dy * th),
+                floatArrayOf(tip[0] - dx * th, tip[1] - dy * th),
+                floatArrayOf(cl[0] + dx * th, cl[1] + dy * th)).map { proj(cam, it[0], it[1], z) }
+            if (pts.any { it == null }) continue
+            chev.reset()
+            pts.forEachIndexed { j, q -> if (j == 0) chev.moveTo(q!!.x, q.y) else chev.lineTo(q!!.x, q.y) }
+            chev.close()
+            planChev.alpha = (208 * ((60f - x) / 30f).coerceIn(0f, 1f)).toInt()
+            canvas.drawPath(chev, planChev)
+        }
+    }
+
+    // y của vạch làn l tại khoảng cách x (nội suy theo lưới X_IDXS của model)
+    private fun laneYAt(o: FloatArray, l: Int, x: Float): Float {
+        var i = 1
+        while (i < 32 && X_IDXS[i] < x) i++
+        val f = ((x - X_IDXS[i - 1]) / (X_IDXS[i] - X_IDXS[i - 1])).coerceIn(0f, 1f)
+        val a = o[LANE + l * 66 + (i - 1) * 2]; val b = o[LANE + l * 66 + i * 2]
+        return a + (b - a) * f
+    }
+
+    // trộn màu dải xanh -> vàng cam theo mức lấn làn f (0..1)
+    private fun mixC(f: Float): Int {
+        val a = 0x7799F0C0; val b = SHIFT_C.toInt()
+        var out = 0
+        for (s in intArrayOf(24, 16, 8, 0)) {
+            val v = (((a ushr s) and 0xFF) * (1f - f) + ((b ushr s) and 0xFF) * f).roundToInt().coerceIn(0, 255)
+            out = out or (v shl s)
+        }
+        return out
+    }
+
+    // Dải quỹ đạo: đoạn nằm trong làn mình màu xanh, đoạn lấn sang làn bên chuyển dần sang vàng cam (như khi đổi làn)
+    private fun drawBand(canvas: Canvas, a: List<PointF>, b: List<PointF>, cross: List<Float>) {
+        if (a.size < 2) return
+        val y0 = (a[0].y + b[0].y) / 2f; val y1 = (a.last().y + b.last().y) / 2f
+        if (cross.none { it > 0.05f } || y0 - y1 < 4f) { polygon(canvas, a, b, pathFill); return }
+        val cols = IntArray(a.size); val pos = FloatArray(a.size)
+        var last = 0f
+        for (i in a.indices) {
+            last = max(last, ((y0 - (a[i].y + b[i].y) / 2f) / (y0 - y1)).coerceIn(0f, 1f))
+            pos[i] = last
+            cols[i] = mixC(cross[i])
+        }
+        bandP.shader = LinearGradient(0f, y0, 0f, y1, cols, pos, Shader.TileMode.CLAMP)
+        polygon(canvas, a, b, bandP)
     }
 
     private fun polygon(canvas: Canvas, a: List<PointF>, b: List<PointF>, paint: Paint) {
@@ -871,7 +1023,10 @@ object HudRenderer {
         if (show) polygon(sc, left, right, zoneFill)
 
         // Dải quỹ đạo dự kiến (rộng ~1,8 m); z của quỹ đạo là tương đối nên cộng camH
-        val pl = ArrayList<PointF>(); val pr = ArrayList<PointF>()
+        val pl = ArrayList<PointF>(); val pr = ArrayList<PointF>(); val pc = ArrayList<Float>()
+        // chỉ tô màu chuyển làn khi thấy rõ cả hai vạch làn mình và bề rộng làn hợp lý
+        val laneOk = sigmoid(o[LANE_PROB + 3]) > 0.4f && sigmoid(o[LANE_PROB + 5]) > 0.4f &&
+                abs(o[LANE + 132] - o[LANE + 66]) in 2.4f..5f
         for (p in 0 until 33) {
             val b = PLAN + p * 15
             val x = o[b]
@@ -879,12 +1034,24 @@ object HudRenderer {
             val z = o[b + 2] + camH
             val a = proj(cam, x, o[b + 1] - 0.9f, z)
             val c = proj(cam, x, o[b + 1] + 0.9f, z)
-            if (a != null && c != null) { pl.add(a); pr.add(c) }
+            if (a != null && c != null) {
+                pl.add(a); pr.add(c)
+                var cr = 0f
+                if (laneOk) {
+                    val y1 = laneYAt(o, 1, x); val y2 = laneYAt(o, 2, x)
+                    val inside = min(o[b + 1] - min(y1, y2), max(y1, y2) - o[b + 1])   // tâm dải cách vạch gần nhất (âm = đã qua vạch)
+                    cr = ((0.6f - inside) / 1.2f).coerceIn(0f, 1f)
+                }
+                pc.add(cr)
+            }
         }
         // Sắp rẽ (≤150 m): làn vàng AR + mũi tên chạy theo hướng rẽ thay cho dải xanh; đi thẳng giữ dải xanh
         val arPath = if (show && turn != null && turn.distanceM in 0..AR_RANGE_M) arLanePath(turn.turn, turn.distanceM.toFloat()) else null
-        if (arPath != null) drawArLane(sc, cam, arPath, turn!!.distanceM.toFloat(), animSec, k)
-        else if (show) polygon(sc, pl, pr, pathFill)
+        if (arPath != null) {
+            if (arArrows) drawArArrows(sc, cam, arPath, turn!!.distanceM.toFloat(), animSec, k)
+            else drawArLane(sc, cam, arPath, turn!!.distanceM.toFloat(), animSec, k)
+        }
+        else if (show) { drawBand(sc, pl, pr, pc); drawPlanChevrons(sc, cam, o, animSec) }
 
         // Mép đường (trắng)
         edgeLine.strokeWidth = 3f * k
@@ -1107,12 +1274,11 @@ object HudRenderer {
             val gd = if (d === leadDet) lx else objDist(cam, d)
             return if (vEgo >= WARN_MIN_SPEED && gd < safeGap) CAUTION_C else SAFE_C
         }
-        // Trong phố: chỉ vẽ hộp vật trong vòng 50 m cho đỡ rối (vật gần nhất / xe phía trước luôn vẽ; cảnh báo vẫn tính mọi vật)
-        fun near(d: Detection) = roadMode != MODE_CITY || d === nearDet || d === leadDet || !(objDist(cam, d) > CITY_BOX_M)
+        // Chỉ vẽ MỘT hộp: vật gần nhất trên đường đi phía trước (hoặc xe dẫn đầu). Cảnh báo vẫn tính mọi vật,
+        // chỉ bớt hộp cho đỡ rối mắt (nhiệt không đổi: YOLO vẫn quét cả khung như cũ)
         if (show) {
-            for (d in objs) if (d !in focus && d !== nearDet && near(d)) drawDim(sc, d, cam.scale, k)
-            for (d in objs) if ((d in focus || d === nearDet) && d !== leadDet && near(d)) drawFocus(sc, d, cam.scale, k, d === nearDet, stateColor(d))
-            if (leadDet != null) drawFocus(sc, leadDet, cam.scale, k, true, stateColor(leadDet))
+            val one = nearDet ?: leadDet
+            if (one != null) drawFocus(sc, one, cam.scale, k, true, stateColor(one))
         }
 
         if (scenePic != null) { scenePic.endRecording(); canvas.drawPicture(scenePic); lastScene = scenePic }

@@ -134,6 +134,31 @@ private class MapDraw(private val k: Float) {
     private val altRim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFF0B3A5C.toInt(); strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
     private val destP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF14B8A6.toInt() }
     private var altPts: Array<FloatArray> = emptyArray()
+    private val jamP = arrayOf(
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFFFFB020.toInt(); strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND },
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFFFF3B30.toInt(); strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND })
+    private val doneP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFF56606E.toInt(); strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+
+    // vẽ đoạn tuyến từ điểm a tới b (chỉ số điểm), thưa điểm khi tuyến dài
+    private fun sub(c: Canvas, pr: (Double, Double) -> PointF, la: DoubleArray, lo: DoubleArray, a: Int, b: Int, p: Paint) {
+        val i0 = a.coerceIn(0, la.size - 1); val i1 = b.coerceIn(0, la.size - 1)
+        if (i1 <= i0) return
+        val step = max(1, (i1 - i0) / 600)
+        path.reset()
+        val p0 = pr(la[i0], lo[i0]); path.moveTo(p0.x, p0.y)
+        var i = i0 + step
+        while (i < i1) { val q = pr(la[i], lo[i]); path.lineTo(q.x, q.y); i += step }
+        val pl = pr(la[i1], lo[i1]); path.lineTo(pl.x, pl.y)
+        c.drawPath(path, p)
+    }
+    private fun jams(c: Canvas, pr: (Double, Double) -> PointF, la: DoubleArray, lo: DoubleArray, at: IntArray, lv: IntArray, from: Int, w: Float) {
+        for (q in at.indices) {
+            if (lv[q] <= 0) continue
+            val b = if (q + 1 < at.size) at[q + 1] else la.size - 1
+            val p = jamP[min(1, lv[q] - 1)]; p.strokeWidth = w
+            sub(c, pr, la, lo, max(at[q], from), b, p)
+        }
+    }
 
     // Bấm gần tuyến nào (toạ độ màn hình) thì chọn tuyến đó; -1 = không trúng tuyến nào
     fun pickAlt(x: Float, y: Float): Int {
@@ -178,6 +203,7 @@ private class MapDraw(private val k: Float) {
             if (i == altSel) {
                 altRim.strokeWidth = 11f * k; c.drawPath(path, altRim)
                 routeP.strokeWidth = 7f * k; c.drawPath(path, routeP)
+                val r = alts[i]; jams(c, pr, r.lat, r.lon, r.jamAt, r.jamLvl, 0, 7f * k)
             } else {
                 altP.strokeWidth = 7f * k; c.drawPath(path, altP)
             }
@@ -199,6 +225,10 @@ private class MapDraw(private val k: Float) {
             val pl = pr(la[la.size - 1], lo[lo.size - 1]); path.lineTo(pl.x, pl.y)
             glowP.strokeWidth = 16f * k; c.drawPath(path, glowP)
             routeP.strokeWidth = 7f * k; c.drawPath(path, routeP)
+            // đoạn đã đi xám, kẹt xe vàng/đỏ trên phần còn lại
+            val i0 = nav.routeIdx()
+            if (i0 > 0) { doneP.strokeWidth = 8f * k; sub(c, pr, la, lo, 0, i0, doneP) }
+            nav.routeJam()?.let { (ja, jl) -> jams(c, pr, la, lo, ja, jl, max(0, i0), 7f * k) }
         }
 
         // Trạm sạc (luôn đứng thẳng, một màu cho mọi trạm)
@@ -358,12 +388,23 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
         vis("traffic", traffic)
     }
 
-    // Gợi ý địa chỉ khi gõ (dừng gõ 0,45 s mới hỏi HERE: mỗi lần hỏi là 1 lượt gọi)
+    // Gợi ý địa chỉ khi gõ (từ 3 ký tự, dừng gõ 0,6 s mới hỏi: mỗi lần hỏi là 1 lượt gọi GOFA/HERE)
     LaunchedEffect(query, searching) {
-        if (!searching || query.trim().length < 2) { sugg = emptyList(); return@LaunchedEffect }
-        delay(450)
+        if (!searching || query.trim().length < 3) { sugg = emptyList(); return@LaunchedEffect }
+        delay(600)
         val q = query
         sugg = withContext(Dispatchers.IO) { nav.search(q) }
+    }
+    // Chọn gợi ý: kết quả GOFA cần hỏi thêm toạ độ (mạng) nên làm ngoài luồng UI
+    var picking by remember { mutableStateOf<HereNav.Place?>(null) }
+    LaunchedEffect(picking) {
+        val pl = picking ?: return@LaunchedEffect
+        val ll = withContext(Dispatchers.IO) { nav.place(pl.refId) }
+        picking = null
+        if (ll != null) {
+            dest = Triple(ll.first, ll.second, pl.name); query = pl.name
+            searching = false; sugg = emptyList(); sel = null; focus.clearFocus()
+        }
     }
     // Có điểm đến: xin 2–3 tuyến, thu bản đồ cho thấy cả đường đi
     LaunchedEffect(dest, runner.navVehicle) {
@@ -476,13 +517,7 @@ fun BoxScope.MapPage(runner: Runner, onHud: () -> Unit) {
                     Column(Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xF50E202C))) {
                         sugg.take(6).forEach { pl ->
                             Row(
-                                Modifier.fillMaxWidth().clickable {
-                                    val ll = nav.place(pl.refId)
-                                    if (ll != null) {
-                                        dest = Triple(ll.first, ll.second, pl.name); query = pl.name
-                                        searching = false; sugg = emptyList(); sel = null; focus.clearFocus()
-                                    }
-                                }.padding(horizontal = 16.dp, vertical = 10.dp),
+                                Modifier.fillMaxWidth().clickable { picking = pl }.padding(horizontal = 16.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(Modifier.weight(1f)) {

@@ -93,6 +93,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -117,7 +118,9 @@ private const val TAG = "ModelInfo"
 private const val DW = 1024             // độ rộng ảnh hiển thị (≈ độ rộng thật trên màn hình điện thoại)
 private const val REFLECT_CONV_MS = 250L  // chế độ phản chiếu: đổi ảnh camera sang RGB 4 lần/giây
 private const val RING = 6              // bitmap xoay vòng: 2 (hàng đợi) + 1 (đang vẽ) + 1 (đang hiện) + 1 (đang dựng) + dư 1
-private const val GAIN = 0.004f         // tốc độ tự hiệu chỉnh mỗi khung (nhỏ = chậm, mượt)
+private const val CAL_WIN_MS = 15_000L  // tự hiệu chỉnh: gom hướng chuyển động 15 giây rồi chỉnh một lần
+private const val CAL_MIN_N = 30        // tối thiểu số mẫu hợp lệ trong một lượt
+private const val CAL_DAMP = 0.8f       // chỉnh 80% độ lệch đo được mỗi lượt (tránh vọt lố)
 private const val AUTO_SIGN = 1f        // đổi thành -1f nếu chân trời chạy dạt về một phía
 private const val WARMUP = 40           // số lần suy luận đầu không tự chỉnh
 private const val AUTO_MIN_SPEED = 5.5f // m/s (~20 km/h): chỉ tự chỉnh khi đủ nhanh (chạy trong phố cũng chỉnh được)
@@ -155,6 +158,8 @@ internal class FrameJob(
 )
 
 // Khung dùng để SUY LUẬN: chỉ những khung nằm trên lưới 20 Hz
+private val NO_INPUT = ByteArray(0)
+
 internal class InferJob(
     val input: ByteArray,
     val dtUs: Long,
@@ -190,6 +195,13 @@ class Runner(private val ctx: Context) {
     var thermalAuto by mutableStateOf(true)  // tự giảm tải khi máy nóng
     // Có gắn sò lạnh (quạt Peltier) sau lưng máy: nhắc khi pin lạnh dễ đọng sương, hoặc vẫn nóng (sò mất nguồn)
     var cooler by mutableStateOf(prefs.getBoolean("cooler", false))
+    // Tiết kiệm nhiệt (mặc định bật): chạy mát khi không có sò lạnh. NPU 10 lần/s (15 khi ≥60 km/h, 20 khi có nguy cơ),
+    // YOLO 5 lần/s, điện thoại không hiện (đang cắm Android Auto / tắt màn hình) thì chỉ dựng ảnh 5 hình/s
+    var ecoMode by mutableStateOf(prefs.getBoolean("ecoMode", true))
+    // Tắt comma.ai: chỉ chạy YOLO (mát hơn nhiều), mất dải đường xanh / vạch làn / xe dẫn đầu của model
+    var commaOn by mutableStateOf(prefs.getBoolean("commaOn", true))
+    // comma.ai bản nhẹ (61MB) thay bản lớn (756MB): mát hơn nhiều, tải lần đầu nhanh hơn
+    var commaSmall by mutableStateOf(prefs.getBoolean("commaSmall", true))
     // Nhiệt độ pin mục tiêu (°C): bắt đầu giãn nhịp sớm khi pin tiến gần mức này, không chờ Android báo nóng
     var coolTarget by mutableStateOf(prefs.getFloat("coolTarget", 40f).coerceIn(35f, 45f))
     var capFps by mutableStateOf(true)       // phát đúng nhịp thời gian thực của video
@@ -197,6 +209,9 @@ class Runner(private val ctx: Context) {
     // Dòng hiệu năng trên HUD (luồng nhiệt ghi, luồng vẽ đọc)
     @Volatile private var perfText = ""
     @Volatile private var perfCpu = Float.NaN
+    // nhiệt hiện tại cho màn hình xe (ô khoảng cách trên Android Auto)
+    @Volatile var cpuNowC = Float.NaN
+    @Volatile var battNowC = Float.NaN
     @Volatile var heatLevel = 0           // mức giảm tải nhiệt hiện tại (trang Bản đồ tự về 2D khi >= 2)
     var warnOn by mutableStateOf(true)        // cảnh báo va chạm (tiếng tít + viền đỏ)
     var alertFlash by mutableStateOf(false)   // pha "sáng" của viền đỏ chớp
@@ -207,6 +222,10 @@ class Runner(private val ctx: Context) {
     var beepVolume by mutableStateOf(100f)    // âm lượng tiếng tít (0-100, tương đối so với âm lượng phương tiện của máy)
     // Phần đáy khung bị capo che (0..0,45): YOLO không nhìn, không cảnh báo, không vẽ đường ở đó
     var hoodCut by mutableStateOf(prefs.getFloat("hoodCut", HOOD_DEFAULT))
+    // Tự tìm mép capo / taplo / hốc HUD khi xe chạy (mặc định bật); chọn mức tay thì tắt
+    var hoodAuto by mutableStateOf(prefs.getBoolean("hoodAuto", true))
+    private val hoodFinder = HoodFinder()
+    private var hoodSeen = false
     var camKind by mutableStateOf(CamKind.values().getOrNull(prefs.getInt("camKind", 0)) ?: CamKind.PHONE)
     var streamUrl by mutableStateOf(prefs.getString("streamUrl", STREAM_DEFAULT) ?: STREAM_DEFAULT)
     // (không còn dùng: ước tính giới hạn theo loại đường OSM; giới hạn giờ chỉ theo nguồn cảnh báo giao thông đã chọn)
@@ -284,14 +303,15 @@ class Runner(private val ctx: Context) {
     private val alertLog = AlertLog(ctx)
     val thermalLog = ThermalLog(ctx)
     fun savePrefs() {
-        prefs.edit().putFloat("hoodCut", hoodCut).putInt("camKind", camKind.ordinal).putString("streamUrl", streamUrl)
+        prefs.edit().putFloat("hoodCut", hoodCut).putBoolean("hoodAuto", hoodAuto).putInt("camKind", camKind.ordinal).putString("streamUrl", streamUrl)
             .putBoolean("alertLog", logOn).putBoolean("limitGuess", limitGuess)
             .putInt("roadMode", roadMode).putBoolean("autoCal", autoCal).putFloat("horizon", horizon)
             .putInt("alertSound", alertSound).putBoolean("collect", collectData)
             .putFloat("camH", camH).putBoolean("reflect", reflect)
             .putInt("navVehicle", navVehicle).putBoolean("miniMap", miniMap)
-            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).putBoolean("cooler", cooler)
-            .putBoolean("dimStill", dimStill).apply()
+            .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).putBoolean("cooler", cooler).putBoolean("ecoMode", ecoMode).putBoolean("commaOn", commaOn).putBoolean("commaSmall", commaSmall)
+            .putBoolean("dimStill", dimStill).putInt("arStyle", arStyle).apply()
+        HudRenderer.arArrows = arStyle == 1
         nav.vehicle = if (navVehicle == 1) "scooter" else "car"
         nav.showMini = miniMap
         HudRenderer.camH = camH
@@ -302,12 +322,13 @@ class Runner(private val ctx: Context) {
     private var clockMin = -1L
     private var clockStr = ""
     val gps = LocationFallback(ctx)           // dự phòng: tốc độ + tên đường theo GPS điện thoại
-    val weather = WeatherInfo(gps)            // thời tiết hiện tại (Open-Meteo) cho góc trái HUD
+    val weather = WeatherInfo(gps)            // thời tiết hiện tại (HERE Weather) cho góc trái HUD
     val here = HereGeo(gps)
     // Chỉ đường HERE (tìm điểm đến, mũi tên rẽ, bản đồ nhỏ); 0 = ô tô, 1 = xe máy
     val nav = HereNav(gps).apply { diskDir = File(ctx.cacheDir, "tiles") }
     var navVehicle by mutableStateOf(prefs.getInt("navVehicle", 0).coerceIn(0, 1))
     var miniMap by mutableStateOf(prefs.getBoolean("miniMap", true))
+    var arStyle by mutableStateOf(prefs.getInt("arStyle", 1).coerceIn(0, 1))   // báo rẽ trên camera: 0 làn vàng, 1 mũi tên xanh
 
     init {
         // Mã cài đặt ngẫu nhiên: máy chủ HERE giới hạn lượt gọi theo mã này (không chứa thông tin cá nhân)
@@ -317,6 +338,7 @@ class Runner(private val ctx: Context) {
         nav.showMini = miniMap
         HudRenderer.camH = camH
         HudRenderer.reflect = reflect
+        HudRenderer.arArrows = arStyle == 1
         CarLink.nav = nav
         CarLink.gps = gps
         // Kiểu chữ HUD tuỳ chọn: đặt file assets/fonts/hud.ttf (ví dụ Exo 2 ExtraLight) để thay Roboto Thin
@@ -359,6 +381,8 @@ class Runner(private val ctx: Context) {
         return when {
             level >= 4 -> 5
             level >= 2 -> 10
+            ecoMode && driveKmh >= 60f -> 15
+            ecoMode -> 10
             driveKmh >= 60f && level == 0 -> 20
             else -> 15
         }
@@ -481,6 +505,15 @@ class Runner(private val ctx: Context) {
                 val fSrc = (w / 2f) / tan(Math.toRadians(hfov / 2.0)).toFloat()
                 val cx = w * (0.5f + cxShift)
                 val cy = horizon * h
+                // Tự tìm mép capo: chỉ với camera thật, xe chạy từ 15 km/h (cảnh trước mặt phải chuyển động)
+                if (hoodAuto && useCamera && (gps.speedKmh() ?: 0f) >= 15f) {
+                    val hf = hoodFinder.feed(yuv, t0)
+                    if (!hf.isNaN()) {
+                        hoodCut = if (hoodSeen) hoodCut * 0.3f + hf * 0.7f else hf
+                        hoodSeen = true
+                        savePrefs()
+                    }
+                }
 
                 // Lưới suy luận 50 ms cố định theo video (cùng logic cũ); dung sai = nửa chu kỳ khung
                 var ij: InferJob? = null
@@ -492,9 +525,12 @@ class Runner(private val ctx: Context) {
                         acc = minOf(acc - 20, 19)
                         val dtUs = if (lastPts < 0) STEP_US else yuv.ptsUs - lastPts
                         lastPts = yuv.ptsUs
-                        val input = ByteArray(Preprocess.INPUT_SIZE)
-                        warper.warp(yuv, fSrc, cx, cy, 910f, 47.6f, input, 0)
-                        warper.warp(yuv, fSrc, cx, cy, 455f, 151.8f, input, Preprocess.STREAM)
+                        // comma.ai tắt: không cần ảnh đầu vào (đỡ cả CPU nắn ảnh), luồng NPU chỉ chạy YOLO
+                        val input = if (commaOn) ByteArray(Preprocess.INPUT_SIZE) else NO_INPUT
+                        if (commaOn) {
+                            warper.warp(yuv, fSrc, cx, cy, 910f, 47.6f, input, 0)
+                            warper.warp(yuv, fSrc, cx, cy, 455f, 151.8f, input, Preprocess.STREAM)
+                        }
 
                         val yh = if (idle) minOf(yoloHz, 2f) else yoloHz
                         val nowY = SystemClock.elapsedRealtime()
@@ -573,6 +609,7 @@ class Runner(private val ctx: Context) {
             var n = 0
             var dets: List<Detection> = emptyList()
             var speedEma = 0f
+            var calDz = 0f; var calDy = 0f; var calN = 0; var calT0 = 0L
             var lastPoll = 0L
             var lastTLog = 0L
             var held = 0      // mức giảm tải đang áp dụng (tăng ngay, hạ từ từ)
@@ -609,6 +646,7 @@ class Runner(private val ctx: Context) {
                         heatLevel = held
                         thermalLine = thermalText(ti, held)
                         perfCpu = cpuEma
+                        cpuNowC = cpuEma; battNowC = ti.batteryC
                         perfText = buildString {
                             append("CPU ").append(if (cpuEma.isNaN()) "--" else cpuEma.roundToInt().toString()).append("°C")
                             append(" · PIN ").append(if (ti.batteryC.isNaN()) "--" else ti.batteryC.roundToInt().toString()).append("°C")
@@ -669,7 +707,7 @@ class Runner(private val ctx: Context) {
                 if (coolPause) continue
 
                 val t0 = SystemClock.elapsedRealtime()
-                val out = eng.step(job.input)
+                val out = if (job.input.isEmpty()) HudRenderer.straightOut() else eng.step(job.input)
                 val npuMs = SystemClock.elapsedRealtime() - t0
 
                 // YOLO (NPU) theo nhịp yoloHz (luồng A đã chọn khung); các khung giữa dùng lại hộp gần nhất
@@ -705,9 +743,17 @@ class Runner(private val ctx: Context) {
                     if (tx > AUTO_MIN_SPEED && abs(yawRate) < 0.03f) {
                         val dz = (tz / tx).coerceIn(-0.2f, 0.2f)
                         val dy = (ty / tx).coerceIn(-0.2f, 0.2f)
-                        horizon = (horizon + GAIN * AUTO_SIGN * job.fSrc * dz / job.h).coerceIn(0.3f, 0.8f)
-                        cxShift = (cxShift + GAIN * AUTO_SIGN * job.fSrc * dy / job.w).coerceIn(-0.15f, 0.15f)
-                        if (n % 300 == 0) prefs.edit().putFloat("horizon", horizon).apply()   // nhớ cho lần chạy sau
+                        calDz += dz; calDy += dy; calN++
+                    }
+                    val nowC = SystemClock.elapsedRealtime()
+                    if (calT0 == 0L) calT0 = nowC
+                    if (nowC - calT0 >= CAL_WIN_MS) {
+                        if (calN >= CAL_MIN_N) {
+                            horizon = (horizon + CAL_DAMP * AUTO_SIGN * job.fSrc * (calDz / calN) / job.h).coerceIn(0.3f, 0.8f)
+                            cxShift = (cxShift + CAL_DAMP * AUTO_SIGN * job.fSrc * (calDy / calN) / job.w).coerceIn(-0.15f, 0.15f)
+                            prefs.edit().putFloat("horizon", horizon).apply()   // nhớ cho lần chạy sau
+                            calDz = 0f; calDy = 0f; calN = 0; calT0 = nowC
+                        } else if (nowC - calT0 >= 4 * CAL_WIN_MS) { calDz = 0f; calDy = 0f; calN = 0; calT0 = nowC }   // quá lâu không đủ mẫu (kẹt xe, cua): làm lại
                     }
                 }
 
@@ -942,14 +988,24 @@ class Runner(private val ctx: Context) {
     // model quen với 20 Hz nên chỉ hạ nhịp suy luận ở mức nặng nhất.
     private fun applyThermal(lv: Int) {
         level = lv
-        displayEvery = if (thermalAuto && lv >= 3) 2 else 1
+        displayEvery = when {
+            ecoMode && !phoneVisible() -> 4      // không ai nhìn màn hình điện thoại: đủ cho ô camera trên xe (4 hình/s)
+            thermalAuto && lv >= 3 -> 2
+            else -> 1
+        }
         // YOLO không tắt hẳn ở mức nào: nó là nguồn chính của cảnh báo xe cắt đầu / người đi bộ
         yoloHz = if (!thermalAuto) 10f else when (lv) {
-            0, 1 -> 7f
+            0, 1 -> if (ecoMode) 5f else 7f
             2 -> 4f
             else -> 2.5f
         }
     }
+
+    private fun phoneVisible(): Boolean = try {
+        val i = android.app.ActivityManager.RunningAppProcessInfo()
+        android.app.ActivityManager.getMyMemoryState(i)
+        i.importance <= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+    } catch (_: Throwable) { true }
 
     // Mức giảm tải theo nhiệt độ pin so với mục tiêu (pin nóng chậm hơn chip nên bắt đầu sớm 1,5 °C)
     private fun targetLevel(batteryC: Float): Int {
@@ -973,7 +1029,7 @@ class Runner(private val ctx: Context) {
         else if (!i.powerW.isNaN()) sb.append(" | ≈").append("%.1f".format(i.powerW)).append(" W")
         sb.append(" | mức giảm tải ").append(lv)
         sb.append(" | NPU ").append(npuRate()).append(" lần/s | YOLO ").append("%.1f".format(yoloHz)).append(" lần/s")
-        if (displayEvery > 1) sb.append(" | màn hình 10 hình/s")
+        if (displayEvery > 1) sb.append(" | màn hình ").append(20 / displayEvery).append(" hình/s")
         return sb.toString()
     }
 
@@ -1025,6 +1081,10 @@ class Runner(private val ctx: Context) {
                 bp = BeepPlayer(beepVolume.toInt())
                 beeper = bp
                 ModelFiles.onProgress = { status = it }
+                htpMode = if (ecoMode) "balanced" else "sustained_high_performance"   // áp dụng khi nạp model (lần mở app sau)
+                // đổi bản comma: đóng model cũ (trả bộ nhớ NPU) rồi nạp bản mới
+                engine?.let { if (it.small != commaSmall) { it.close(); engine = null } }
+                smallComma = commaSmall
                 if (engine == null) {
                     status = "Đang nạp model lên NPU (không có cache sẽ mất ~13 phút)..."
                     val e = DrivingEngine(ctx)
@@ -1325,16 +1385,20 @@ private fun RoadModePicker(runner: Runner) {
     }
 }
 
-// Vùng capo che đáy khung: 3 mức 5 / 10 / 15%
-private val HOOD_STEPS = floatArrayOf(0.05f, 0.10f, 0.15f)
+// Vùng capo che đáy khung: tự động hoặc 4 mức tay (máy đặt thấp sau taplo có thể che tới ~35%)
+private val HOOD_STEPS = floatArrayOf(0.05f, 0.15f, 0.25f, 0.35f)
 
 @Composable
 private fun HoodPicker(runner: Runner) {
     Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
         RowTitle("Che vùng capo")
-        val sel = HOOD_STEPS.indices.minByOrNull { abs(HOOD_STEPS[it] - runner.hoodCut) } ?: 2
-        Segmented(listOf("5%", "10%", "15%"), sel) { runner.hoodCut = HOOD_STEPS[it]; runner.savePrefs() }
-        Desc("Phần đáy khung bị capo/taplo che: không nhận diện, không cảnh báo. Chọn mức cho vạch trắng nằm sát mép capo.", top = 6)
+        val sel = if (runner.hoodAuto) 0 else 1 + (HOOD_STEPS.indices.minByOrNull { abs(HOOD_STEPS[it] - runner.hoodCut) } ?: 1)
+        Segmented(listOf("Tự động", "5%", "15%", "25%", "35%"), sel) {
+            if (it == 0) runner.hoodAuto = true else { runner.hoodAuto = false; runner.hoodCut = HOOD_STEPS[it - 1] }
+            runner.savePrefs()
+        }
+        Desc("Phần đáy khung bị capo / taplo / hốc HUD che: không nhận diện, không cảnh báo. Tự động: chạy xe khoảng 20 giây " +
+            "(từ 15 km/h) là app tự đặt vạch trắng sát mép capo (hiện ${(runner.hoodCut * 100).roundToInt()}%).", top = 6)
     }
 }
 
@@ -1472,7 +1536,14 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             .verticalScroll(rememberScrollState())
             .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp)
     ) {
-        Text("Cài đặt", color = white, fontSize = 30.sp, modifier = Modifier.padding(start = 4.dp, top = 10.dp, bottom = 6.dp))
+        var about by remember { mutableStateOf(false) }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Cài đặt", color = white, fontSize = 30.sp, modifier = Modifier.padding(start = 4.dp, top = 10.dp, bottom = 6.dp, end = 12.dp))
+            // ⓘ: thông tin sản phẩm (tính năng, bản quyền); đặt cạnh tiêu đề vì góc phải là nút ⚙/✕
+            Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF1C222A)).clickable { about = true },
+                contentAlignment = Alignment.Center) { Text("i", color = white, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
+        }
+        if (about) AboutDialog { about = false }
 
         SectionTitle("Nguồn hình")
         SettingsCard {
@@ -1522,6 +1593,11 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             NavRow("Nhạc trên Android Auto", value = if (MediaNow.granted(ctx)) "Đã cho phép" else "Chưa cho phép",
                 desc = "Cho EVCarHUD đọc bài đang phát (YouTube Music, Spotify...) để hiện trên màn hình xe. Bấm để mở Truy cập thông báo.",
                 onClick = { ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
+            RowLine(); Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                RowTitle("Báo rẽ trên camera")
+                Segmented(listOf("Mũi tên xanh", "Làn vàng"), 1 - runner.arStyle) { runner.arStyle = 1 - it; runner.savePrefs() }
+                Desc("Hiện khi còn dưới 150 m tới chỗ rẽ, chạy theo đúng hướng rẽ.", top = 6)
+            }
             RowLine(); SwitchRow("Bản đồ nhỏ", "Tuyến đường dưới đồng hồ tốc độ khi đang chỉ đường, kèm quãng đường và thời gian còn lại.", runner.miniMap) {
                 runner.miniMap = it; runner.savePrefs()
             }
@@ -1535,7 +1611,7 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             RowLine(); SliderRow("Đường chân trời", "${(runner.horizon * 100).roundToInt()}%", runner.horizon, 0.3f..0.8f,
                 "30%", "80%", "Tính từ mép trên khung hình. Tự hiệu chỉnh sẽ chỉnh dần khi xe chạy thẳng.",
                 onChange = { runner.horizon = it }, onDone = { runner.savePrefs() })
-            RowLine(); SwitchRow("Tự hiệu chỉnh", "Bật mặc định. Chỉnh dần chân trời và độ lệch ngang khi xe chạy thẳng trên ~20 km/h, nhớ cho lần sau.", runner.autoCal) { runner.autoCal = it; runner.savePrefs() }
+            RowLine(); SwitchRow("Tự hiệu chỉnh", "Bật mặc định. Khi xe chạy thẳng trên ~20 km/h, cứ 15 giây chỉnh chân trời và độ lệch ngang một lần, nhớ cho lần sau.", runner.autoCal) { runner.autoCal = it; runner.savePrefs() }
             RowLine(); SwitchRow("Nhận diện vật thể (YOLO)", "Ô tô, xe máy, người, đèn giao thông, biển STOP.", runner.yoloOn) { runner.yoloOn = it }
             RowLine(); SliderRow("Chiều cao camera", "%.2f m".format(runner.camH), runner.camH, 0.6f..2.2f,
                 "0,6 m", "2,2 m", "Từ mặt đường tới ống kính. Dùng để đo khoảng cách theo hộp nhận diện.",
@@ -1552,7 +1628,19 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
 
         SectionTitle("Hiệu năng")
         SettingsCard {
-            SwitchRow("Tự giảm tải khi nóng", "Giãn nhịp YOLO và NPU theo nhiệt độ máy.", runner.thermalAuto) { runner.thermalAuto = it }
+            SwitchRow("Tiết kiệm nhiệt", "Chạy mát khi không có sò lạnh: AI nhìn đường 10 lần/giây (nhanh hơn khi chạy cao tốc hoặc có nguy cơ va chạm), " +
+                "đang cắm Android Auto hoặc tắt màn hình điện thoại thì điện thoại không vẽ hình. Tắt: AI chạy tối đa, máy nóng nhanh hơn.", runner.ecoMode) {
+                runner.ecoMode = it; runner.savePrefs()
+            }
+            RowLine(); SwitchRow("Dùng comma.ai", "Vẽ dải đường xanh, vạch làn và đoán xe phía trước bằng model comma.ai (nặng, nóng máy). " +
+                "Tắt: chỉ dùng YOLO, máy mát hơn nhiều, vẫn báo xe phía trước / người đi bộ / biển báo.", runner.commaOn) {
+                runner.commaOn = it; runner.savePrefs()
+            }
+            RowLine(); SwitchRow("comma.ai bản nhẹ", "Model openpilot thường (61MB) thay bản lớn (756MB): mát máy hơn nhiều, độ chính xác hơi thấp hơn. " +
+                "Đổi xong bấm dừng rồi chạy lại camera (lần đầu tải và nạp model mới mất vài phút).", runner.commaSmall) {
+                runner.commaSmall = it; runner.savePrefs()
+            }
+            RowLine(); SwitchRow("Tự giảm tải khi nóng", "Giãn nhịp YOLO và NPU theo nhiệt độ máy.", runner.thermalAuto) { runner.thermalAuto = it }
             RowLine(); SwitchRow("Có sò lạnh", "Bật khi gắn sò lạnh (quạt Peltier) sau lưng máy. App nhắc khi pin xuống dưới 25°C (dễ đọng hơi nước) " +
                 "và khi pin vẫn ấm lên (sò mất nguồn hoặc không áp sát). Tắt: nhắc bật điều hoà hướng vào máy như cũ.", runner.cooler) {
                 runner.cooler = it; runner.savePrefs()
@@ -2026,4 +2114,56 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+// Thông tin sản phẩm: tính năng + bản quyền các thành phần bên thứ ba (model AI, thư viện, dữ liệu bản đồ, phông chữ)
+@Composable
+private fun AboutDialog(onClose: () -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val ver = remember { try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName } catch (_: Exception) { null } ?: "" }
+    val feats = listOf(
+        "Cảnh báo va chạm bằng camera: khoảng cách xe phía trước, xe cắt đầu, xe trước đã chạy, người đi bộ",
+        "Dải đường dự đoán và vạch làn (comma.ai), đổi màu khi chuyển làn",
+        "Đọc biển giới hạn tốc độ, báo chạy quá tốc độ",
+        "Dẫn đường HERE: tìm địa điểm, 2-3 tuyến, giọng đọc tiếng Việt, làn vàng AR khi sắp rẽ",
+        "Bản đồ tối OpenStreetMap, tên đường và giới hạn tốc độ",
+        "Bản đồ trạm sạc VinFast, lọc theo công suất",
+        "Android Auto: bản đồ toàn màn, trạm sạc, camera ADAS, cài đặt nhanh",
+        "Camera điện thoại, webcam USB hoặc camera hành trình Wi-Fi",
+        "Tiết kiệm nhiệt, tự tìm vùng capo và chân trời",
+    )
+    val lic = listOf(
+        "comma.ai openpilot (model supercombo)" to "MIT License, © comma.ai",
+        "YOLOX (model nhận diện vật thể)" to "Apache License 2.0, © Megvii",
+        "ONNX Runtime" to "MIT License, © Microsoft",
+        "Qualcomm AI Engine Direct (QNN)" to "Giấy phép Qualcomm, © Qualcomm Technologies",
+        "Dữ liệu bản đồ" to "© OpenStreetMap contributors (ODbL 1.0), © OpenMapTiles",
+        "Dẫn đường, tìm kiếm, giao thông, ảnh vệ tinh, thời tiết" to "© HERE",
+        "Tìm địa chỉ Việt Nam" to "GOFA Place Search, © GOFA",
+        "MapLibre Native" to "BSD 2-Clause, © MapLibre contributors",
+        "UVCAndroid (webcam USB)" to "Apache License 2.0; libuvc BSD, libusb LGPL 2.1",
+        "OkHttp" to "Apache License 2.0, © Square",
+        "AndroidX, Jetpack Compose, CameraX, Android for Cars, Kotlin" to "Apache License 2.0, © Google / JetBrains",
+        "Phông chữ Inter (bản đồ)" to "SIL Open Font License 1.1, © Rasmus Andersson",
+        "Dữ liệu trạm sạc" to "Tổng hợp từ bản đồ công khai, chỉ để tham khảo",
+    )
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("EVCarHUD" + if (ver.isNotBlank()) " $ver" else "") },
+        text = {
+            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                Text("Tính năng", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                for (f in feats) Text("• $f", fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
+                Text("Bản quyền", fontWeight = FontWeight.Bold, fontSize = 17.sp, modifier = Modifier.padding(top = 14.dp))
+                for ((n, l) in lic) {
+                    Text(n, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 6.dp))
+                    Text(l, fontSize = 13.sp, color = Color(0xFF8B96A3))
+                }
+                Text("Ứng dụng chỉ hỗ trợ người lái, không thay thế việc quan sát. Người lái luôn chịu trách nhiệm điều khiển xe.",
+                    fontSize = 13.sp, color = Color(0xFF8B96A3), modifier = Modifier.padding(top = 14.dp))
+                Text("© 2026 EVCarHUD", fontSize = 13.sp, color = Color(0xFF8B96A3), modifier = Modifier.padding(top = 6.dp))
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("Đóng") } }
+    )
 }

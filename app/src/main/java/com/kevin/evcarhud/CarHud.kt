@@ -210,16 +210,19 @@ class HudScreen(ctx: CarContext) : Screen(ctx) {
         // Chạm lên bảng tự vẽ cần Car API 5 (SurfaceCallback.onClick); xe cũ hơn thì dùng danh sách của Android Auto
         val tap = ctx.carAppApiLevel >= 5
         val strip = ActionStrip.Builder()
-            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_search)).setOnClickListener { screenManager.push(SearchScreen(ctx)) }.build())
-            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_bolt))
-                .setOnClickListener { if (tap) CarUi.toggle(CarUi.CHG) else screenManager.push(ChargerScreen(ctx)) }.build())
-            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_adas)).setOnClickListener { CarUi.toggle(CarUi.ADAS) }.build())
+            // đang dẫn đường: nút tìm thành ✕ hủy (Android Auto cho tối đa 4 nút)
             .apply {
                 if (nav?.active == true) addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_close))
                     .setOnClickListener { nav.stop(); invalidate() }.build())
-                else addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_traffic))
-                    .setOnClickListener { MapCtl.traffic = !MapCtl.traffic; CarToast.show(ctx, if (MapCtl.traffic) "Bật lớp giao thông" else "Tắt lớp giao thông") }.build())
+                else addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_search)).setOnClickListener { screenManager.push(SearchScreen(ctx)) }.build())
             }
+            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_bolt))
+                .setOnClickListener { if (tap) CarUi.toggle(CarUi.CHG) else screenManager.push(ChargerScreen(ctx)) }.build())
+            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_adas)).setOnClickListener { CarUi.toggle(CarUi.ADAS) }.build())
+            .addAction(Action.Builder().setIcon(carIcon(ctx, R.drawable.car_settings)).setOnClickListener {
+                if (tap) CarUi.toggle(CarUi.SET)
+                else { MapCtl.traffic = !MapCtl.traffic; CarToast.show(ctx, if (MapCtl.traffic) "Bật lớp giao thông" else "Tắt lớp giao thông") }
+            }.build())
             .build()
         val mapStrip = ActionStrip.Builder()
             .addAction(Action.PAN)
@@ -269,6 +272,7 @@ object CarUi {
     const val CHG = 1
     const val ROUTE = 2
     const val ADAS = 3
+    const val SET = 4
     @Volatile var mode = NONE
         set(v) { field = v; CarLink.adas = v == ADAS }
     @Volatile var destLat = 0.0
@@ -340,11 +344,17 @@ class SearchScreen(ctx: CarContext) : Screen(ctx) {
             val sub = listOfNotNull(p.distKm.takeIf { !it.isNaN() }?.let { kmText(it) }, p.address.ifBlank { null }).joinToString(" · ")
             if (sub.isNotEmpty()) row.addText(sub)
             row.setOnClickListener {
-                val c = CarLink.nav?.place(p.refId) ?: return@setOnClickListener
+                val nav = CarLink.nav ?: return@setOnClickListener
                 val nm = p.name.ifBlank { p.address }
-                // Car API 5+: về bản đồ, chọn tuyến ở bảng bên phải; xe cũ: danh sách tuyến của Android Auto
-                if (carContext.carAppApiLevel >= 5) { CarUi.routeTo(c.first, c.second, nm); screenManager.popToRoot() }
-                else screenManager.push(RouteScreen(carContext, c.first, c.second, nm))
+                // kết quả GOFA cần hỏi thêm toạ độ qua mạng: làm ở luồng nền rồi quay lại luồng chính
+                carExec.execute {
+                    val c = nav.place(p.refId) ?: return@execute
+                    main.post {
+                        // Car API 5+: về bản đồ, chọn tuyến ở bảng bên phải; xe cũ: danh sách tuyến của Android Auto
+                        if (carContext.carAppApiLevel >= 5) { CarUi.routeTo(c.first, c.second, nm); screenManager.popToRoot() }
+                        else screenManager.push(RouteScreen(carContext, c.first, c.second, nm))
+                    }
+                }
             }
             list.addItem(row.build())
         }
@@ -482,6 +492,8 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
             } else if (m == CarUi.ROUTE) {
                 for (i in goR.indices) if (goR[i].contains(sx, y)) { CarUi.go(i); return@post }
                 for (i in rowR.indices) if (rowR[i].contains(sx, y)) { MapCtl.sel = i; break }
+            } else if (m == CarUi.SET) {
+                for ((rr, act) in setR) if (rr.contains(sx, y)) { act(); break }
             }
         }
     }
@@ -498,7 +510,7 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
     private val signW = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
     private val signR = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFD62020.toInt(); style = Paint.Style.STROKE }
     private val signT = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF111111.toInt(); typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
-    private val routeP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF3AD6C4.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val routeP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF34E06A.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
     private val egoP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF3D8BFF.toInt() }
     private val haloP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x553D8BFF }
     private val goP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF22C55E.toInt() }
@@ -511,6 +523,7 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
     private val closeR = RectF()
     private val rowR = ArrayList<RectF>()
     private val goR = ArrayList<RectF>()
+    private val setR = ArrayList<Pair<RectF, () -> Unit>>()
     private var chgRows: List<Chargers.St> = emptyList()
     private var chgAt = 0L
 
@@ -550,9 +563,10 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
                 CarUi.CHG -> drawChargers(c, sr, k)
                 CarUi.ROUTE -> drawRoutes(c, sr, k)
                 CarUi.ADAS -> drawAdas(c, sr, k)
+                CarUi.SET -> drawSettings(c, sr, k)
             }
             c.restore()
-        } else { shown = CarUi.NONE; closeR.setEmpty(); rowR.clear(); goR.clear() }
+        } else { shown = CarUi.NONE; closeR.setEmpty(); rowR.clear(); goR.clear(); setR.clear() }
     }
 
     private fun speedNow() = if (fresh()) CarLink.speed else (CarLink.gps?.speedKmh() ?: 0f)
@@ -566,9 +580,28 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
     private var sLat = Double.NaN
     private var sLon = Double.NaN
     private val altP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2B5D8A.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
-    private val chgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF4FD18B.toInt() }
-    private val chgRim = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0F141A.toInt(); style = Paint.Style.STROKE }
+    private val chgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2F80ED.toInt() }
+    private val chgRim = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); style = Paint.Style.STROKE }
+    private val boltP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFE14D.toInt() }
+    private val caseP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0A4D22.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val boltPath = Path()
     private val destP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF14B8A6.toInt() }
+    // kẹt xe: vàng chậm, đỏ kẹt; đoạn đã đi xám mờ; vòng sáng lan ra ở đích
+    private val jamP = arrayOf(
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFB020.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND },
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFF3B30.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND })
+    private val doneP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF3A4658.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val pulseP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF34E06A.toInt(); style = Paint.Style.STROKE }
+    // vẽ dần tuyến (~0,9 s) mỗi khi đổi tuyến xem trước / bắt đầu tuyến mới
+    private var growKey: Any? = null
+    private var growT0 = 0L
+    private fun grow(key: Any?): Float {
+        val now = SystemClock.elapsedRealtime()
+        if (key !== growKey) { growKey = key; growT0 = now }
+        val t = ((now - growT0) / 900f).coerceIn(0f, 1f)
+        val u = 1f - t
+        return 1f - u * u * u
+    }
 
     private fun drawMap(c: Canvas, r: RectF, k: Float, sideOpen: Boolean) {
         c.save()
@@ -661,20 +694,69 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
             for (i in la.indices) { px(la[i], lo[i], pt); if (i == 0) path.moveTo(pt[0], pt[1]) else path.lineTo(pt[0], pt[1]) }
             c.drawPath(path, p)
         }
+        // đoạn từ chỉ số điểm a tới b (số thực: nội suy giữa 2 điểm)
+        fun part(la: DoubleArray, lo: DoubleArray, a: Float, b: Float, p: Paint) {
+            val last = la.size - 1
+            val s0 = a.coerceIn(0f, last.toFloat()); val s1 = b.coerceIn(0f, last.toFloat())
+            if (s1 - s0 < 0.01f) return
+            fun at(s: Float) {
+                val i = min(floor(s.toDouble()).toInt(), last - 1); val f = (s - i).toDouble()
+                px(la[i] + (la[i + 1] - la[i]) * f, lo[i] + (lo[i + 1] - lo[i]) * f, pt)
+            }
+            path.reset()
+            at(s0); path.moveTo(pt[0], pt[1])
+            var i = floor(s0.toDouble()).toInt() + 1
+            while (i < s1) { px(la[i], lo[i], pt); path.lineTo(pt[0], pt[1]); i++ }
+            at(s1); path.lineTo(pt[0], pt[1])
+            c.drawPath(path, p)
+        }
+        // tô kẹt xe trên tuyến, chỉ phần [from, to]
+        fun jams(la: DoubleArray, lo: DoubleArray, at: IntArray, lv: IntArray, from: Float, to: Float, w: Float) {
+            for (q in at.indices) {
+                if (lv[q] <= 0) continue
+                val a = at[q].toFloat(); val b = if (q + 1 < at.size) at[q + 1].toFloat() else (la.size - 1).toFloat()
+                val p = jamP[min(1, lv[q] - 1)]; p.strokeWidth = w
+                part(la, lo, max(a, from), min(b, to), p)
+            }
+        }
+        fun pulse(lat: Double, lon: Double) {
+            px(lat, lon, pt)
+            val f = (SystemClock.elapsedRealtime() % 1400L) / 1400f
+            pulseP.strokeWidth = 3f * k; pulseP.alpha = (200 * (1f - f)).toInt()
+            c.drawCircle(pt[0], pt[1], (11f + 26f * f) * k, pulseP)
+        }
+        // chạy tự do: kẹt xe quanh xe (HERE Traffic Flow, chỉ vàng/đỏ); lớp ô giao thông đang bật thì thôi
+        if (!nav.active && pv.isEmpty() && !MapCtl.traffic) {
+            TrafficFlow.update(ll.first, ll.second, speedNow(), false)
+            for (sg in TrafficFlow.segs) { val p = jamP[min(1, sg.lvl - 1)]; p.strokeWidth = 6f * k; line(sg.lat, sg.lon, p) }
+        }
         // trạm sạc trong khung
-        if (z >= 12) for (st in Chargers.load(ctx)) {
+        if (z >= 11) for (st in Chargers.load(ctx)) {
             px(st.lat, st.lon, pt)
             if (!r.contains(pt[0], pt[1])) continue
+            val pr = (if (z >= 14) 13f else 10f) * k
             chgRim.strokeWidth = 2f * k
-            c.drawCircle(pt[0], pt[1], 8f * k, chgP); c.drawCircle(pt[0], pt[1], 8f * k, chgRim)
+            c.drawCircle(pt[0], pt[1], pr, chgP); c.drawCircle(pt[0], pt[1], pr, chgRim)
+            val b = pr * 0.62f
+            boltPath.reset()
+            boltPath.moveTo(pt[0] + 0.15f * b, pt[1] - b); boltPath.lineTo(pt[0] - 0.55f * b, pt[1] + 0.12f * b)
+            boltPath.lineTo(pt[0] - 0.02f * b, pt[1] + 0.12f * b); boltPath.lineTo(pt[0] - 0.15f * b, pt[1] + b)
+            boltPath.lineTo(pt[0] + 0.55f * b, pt[1] - 0.12f * b); boltPath.lineTo(pt[0] + 0.02f * b, pt[1] - 0.12f * b)
+            boltPath.close()
+            c.drawPath(boltPath, boltP)
         }
         // phương án tuyến (xem trước, kèm nhãn số phút) hoặc tuyến đang đi
         if (pv.isNotEmpty()) {
             altP.strokeWidth = 7f * k; routeP.strokeWidth = 8f * k
             for ((i, o) in pv.withIndex()) if (i != MapCtl.sel) line(o.lat, o.lon, altP)
             pv.getOrNull(MapCtl.sel)?.let { o ->
-                line(o.lat, o.lon, routeP)
+                val e = (o.lat.size - 1) * grow(o)
+                caseP.strokeWidth = 12f * k
+                part(o.lat, o.lon, 0f, e, caseP)
+                part(o.lat, o.lon, 0f, e, routeP)
+                jams(o.lat, o.lon, o.jamAt, o.jamLvl, 0f, e, 8f * k)
                 px(o.lat.last(), o.lon.last(), pt); c.drawCircle(pt[0], pt[1], 11f * k, destP)
+                pulse(o.lat.last(), o.lon.last())
             }
             for ((i, o) in pv.withIndex()) {
                 if (o.lat.isEmpty()) continue
@@ -685,9 +767,16 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
         } else {
             val la = nav.routeLat(); val lo = nav.routeLon()
             if (la != null && lo != null && la.size > 1) {
-                routeP.strokeWidth = 9f * k
-                line(la, lo, routeP)
+                // đoạn đã đi xám mờ; đoạn sắp đi vẽ dần từ xe tới đích, tô kẹt xe
+                val i0 = max(0, nav.routeIdx()).toFloat()
+                val e = i0 + (la.size - 1 - i0) * grow(la)
+                routeP.strokeWidth = 9f * k; caseP.strokeWidth = 14f * k; doneP.strokeWidth = 9f * k
+                part(la, lo, 0f, i0, doneP)
+                part(la, lo, i0, e, caseP)
+                part(la, lo, i0, e, routeP)
+                nav.routeJam()?.let { (ja, jl) -> jams(la, lo, ja, jl, i0, e, 9f * k) }
                 px(la.last(), lo.last(), pt); c.drawCircle(pt[0], pt[1], 11f * k, destP)
+                pulse(la.last(), lo.last())
             }
         }
         // xe
@@ -827,8 +916,43 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
         c.drawText("✕", closeR.centerX() - boldP.measureText("✕") / 2f, closeR.centerY() + 7f * k, boldP)
         boldP.textSize = 21f * k
         c.drawText(clip(title, closeR.left - r.left - 2 * g, boldP), r.left + g + 4f * k, r.top + g + 30f * k, boldP)
-        rowR.clear(); goR.clear()
+        rowR.clear(); goR.clear(); setR.clear()
         return r.top + g + 54f * k
+    }
+
+    // ---- bảng cài đặt nhanh trên xe: mỗi dòng = tên + các nút chọn, chạm nút để đổi (lưu như Cài đặt trên điện thoại) ----
+    private val chipOn = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2F80ED.toInt() }
+    private fun drawSettings(c: Canvas, r: RectF, k: Float) {
+        var y = header(c, r, "Cài đặt nhanh", k)
+        val rn = RunnerHolder.get(ctx.applicationContext)
+        fun set(f: () -> Unit) { ctx.mainExecutor.execute { f(); rn.savePrefs() } }
+        val rows = listOf(
+            Triple("Cảnh báo va chạm", listOf("Tắt", "Bật"), if (rn.warnOn) 1 else 0) to { i: Int -> set { rn.warnOn = i == 1 } },
+            Triple("Âm báo", listOf("Tiếng tít", "Giọng đọc"), rn.alertSound) to { i: Int -> set { rn.alertSound = i } },
+            Triple("Chế độ đường", listOf("Phố", "Cao tốc", "Mưa"), rn.roadMode) to { i: Int -> set { rn.roadMode = i } },
+            Triple("Báo rẽ trên camera", listOf("Mũi tên xanh", "Làn vàng"), 1 - rn.arStyle) to { i: Int -> set { rn.arStyle = 1 - i } },
+            Triple("Lớp giao thông", listOf("Tắt", "Bật"), if (MapCtl.traffic) 1 else 0) to { i: Int -> MapCtl.traffic = i == 1 },
+            Triple("Tiết kiệm nhiệt", listOf("Tắt", "Bật"), if (rn.ecoMode) 1 else 0) to { i: Int -> set { rn.ecoMode = i == 1 } },
+            Triple("Dùng comma.ai", listOf("Tắt", "Bật"), if (rn.commaOn) 1 else 0) to { i: Int -> set { rn.commaOn = i == 1 } },
+        )
+        val g = 10f * k
+        val rh = 64f * k      // 7 dòng vừa màn 560
+        for ((row, act) in rows) {
+            if (y + rh > r.bottom - g) break
+            val (name, opts, cur) = row
+            mutP.textSize = 14f * k
+            c.drawText(name, r.left + g + 4f * k, y + 14f * k, mutP)
+            val top = y + 20f * k; val bot = y + rh - 6f * k
+            val cw = (r.width() - 2 * g - (opts.size - 1) * 6f * k) / opts.size
+            for ((i, o) in opts.withIndex()) {
+                val cr = RectF(r.left + g + i * (cw + 6f * k), top, r.left + g + i * (cw + 6f * k) + cw, bot)
+                c.drawRoundRect(cr, 10f * k, 10f * k, if (i == cur) chipOn else cardP)
+                textP.textSize = 16f * k
+                c.drawText(o, cr.centerX() - textP.measureText(o) / 2f, cr.centerY() + 6f * k, textP)
+                setR.add(cr to { act(i) })
+            }
+            y += rh
+        }
     }
 
     // ---- bảng trạm sạc VinFast gần nhất (dữ liệu trong app, không tốn lượt HERE) ----
@@ -926,18 +1050,33 @@ class HudSurface(private val ctx: CarContext) : SurfaceCallback {
             c.drawText(clip(CarLink.street.takeIf { fresh() }.orEmpty().ifBlank { "EVCarHUD" }, right - x - 8f * k, textP), x, top.centerY() + 7f * k, textP)
         }
         // dải xe phía trước: trắng / vàng / đỏ theo mức cảnh báo; cao tốc thì kèm khoảng cách tối thiểu
-        val lead = RectF(r.left + g, top.bottom + 8f * k, r.right - g, top.bottom + 8f * k + 46f * k)
+        val lead = RectF(r.left + g, top.bottom + 8f * k, r.right - g, top.bottom + 8f * k + 66f * k)   // cao hơn cho số to rõ
         c.drawRoundRect(lead, 14f * k, 14f * k, cardP)
         val lm = if (fresh()) CarLink.leadM else Float.NaN
-        mutP.textSize = 13f * k
-        c.drawText(clip((CarLink.leadWhat.ifBlank { "XE PHÍA TRƯỚC" }), lead.width() * 0.45f), lead.left + 16f * k, lead.centerY() + 5f * k, mutP)
-        boldP.textSize = 28f * k
+        mutP.textSize = 16f * k
+        c.drawText(clip((CarLink.leadWhat.ifBlank { "XE PHÍA TRƯỚC" }), lead.width() * 0.45f), lead.left + 16f * k, lead.centerY() - 5f * k, mutP)
+        // nhiệt máy để theo dõi (CPU / pin), đỏ khi nóng
+        val rn = RunnerHolder.get(ctx.applicationContext)
+        val cpu = rn.cpuNowC; val bat = rn.battNowC
+        if (!cpu.isNaN() || !bat.isNaN()) {
+            val tt = buildString {
+                if (!cpu.isNaN()) append("CPU ").append(cpu.roundToInt()).append("°")
+                if (!bat.isNaN()) { if (isNotEmpty()) append("  ·  "); append("Pin ").append(bat.roundToInt()).append("°") }
+            }
+            val hot = (!cpu.isNaN() && cpu >= 70f) || (!bat.isNaN() && bat >= 42f)
+            mutP.textSize = 15f * k
+            val keep = mutP.color
+            mutP.color = if (hot) 0xFFFF7A6B.toInt() else keep
+            c.drawText(clip(tt, lead.width() * 0.45f), lead.left + 16f * k, lead.centerY() + 17f * k, mutP)
+            mutP.color = keep
+        }
+        boldP.textSize = 44f * k
         boldP.color = when { lm.isNaN() -> 0xFF8B96A3.toInt(); CarLink.leadLevel >= 2 -> 0xFFFF5252.toInt(); CarLink.leadLevel == 1 -> 0xFFFFC107.toInt(); else -> 0xFFFFFFFF.toInt() }
         val num = if (lm.isNaN()) "--" else "${lm.roundToInt()} m"
         val gap = if (fresh() && CarLink.leadGap > 0f) "tối thiểu ${CarLink.leadGap.roundToInt()} m" else ""
         val gw = if (gap.isNotEmpty()) mutP.measureText(gap) + 14f * k else 0f
-        c.drawText(num, lead.right - 16f * k - gw - boldP.measureText(num), lead.centerY() + 10f * k, boldP)
-        if (gap.isNotEmpty()) c.drawText(gap, lead.right - 16f * k - mutP.measureText(gap), lead.centerY() + 5f * k, mutP)
+        c.drawText(num, lead.right - 16f * k - gw - boldP.measureText(num), lead.centerY() + 15f * k, boldP)
+        if (gap.isNotEmpty()) c.drawText(gap, lead.right - 16f * k - mutP.measureText(gap), lead.centerY() + 6f * k, mutP)
         boldP.color = 0xFFFFFFFF.toInt()
         // camera
         drawCam(c, RectF(r.left + g, lead.bottom + 8f * k, r.right - g, r.bottom - g), k)
