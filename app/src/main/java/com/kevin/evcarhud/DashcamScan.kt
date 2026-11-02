@@ -24,6 +24,40 @@ import java.util.concurrent.TimeUnit
 
 private const val DTAG = "Dashcam"
 
+// Nhật ký kết nối cam (giữ 200 dòng gần nhất), người dùng sao chép gửi cho nhà phát triển
+object DashcamLog {
+    private val lines = ArrayDeque<String>()
+    private val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+    @Synchronized fun add(s: String) {
+        Log.i(DTAG, s)
+        lines.addLast(fmt.format(java.util.Date()) + " " + s)
+        while (lines.size > 200) lines.removeFirst()
+    }
+    @Synchronized fun text(): String = lines.joinToString("\n")
+
+    // Mô tả các mạng máy đang có: loại, internet, IP
+    fun networks(ctx: Context): String = try {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        @Suppress("DEPRECATION")
+        cm.allNetworks.joinToString("; ") { n -> describe(cm, n) } + " | mặc định=" + cm.activeNetwork
+    } catch (e: Throwable) { "lỗi đọc mạng: ${e.message}" }
+
+    fun describe(cm: ConnectivityManager, n: Network?): String {
+        if (n == null) return "null(Android tự chọn)"
+        val c = cm.getNetworkCapabilities(n)
+        val kind = when {
+            c == null -> "?"
+            c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "4G"
+            c.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
+            else -> "khác"
+        }
+        val inet = if (c?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true) "+net" else "-net"
+        val ip = cm.getLinkProperties(n)?.linkAddresses?.mapNotNull { (it.address as? Inet4Address)?.hostAddress }?.joinToString(",")
+        return "$n:$kind$inet[$ip]"
+    }
+}
+
 // Nối Wi‑Fi của camera hành trình ngay trong app (WifiNetworkSpecifier, Android 10+).
 // Mạng này chỉ app dùng, mạng mặc định của máy vẫn là 4G nên HERE / thời tiết vẫn chạy.
 // Giữ callback suốt lúc app sống: bỏ callback là Android ngắt Wi‑Fi cam.
@@ -59,7 +93,12 @@ object DashcamWifi {
 
     // Nối Wi‑Fi cam. onResult chạy trên luồng của ConnectivityManager: null = không nối được / người dùng huỷ.
     fun connect(ctx: Context, ssid: String, pass: String, onResult: (Network?) -> Unit) {
+        val conc = if (android.os.Build.VERSION.SDK_INT >= 31) try {
+            (ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).isStaConcurrencyForLocalOnlyConnectionsSupported
+        } catch (_: Throwable) { null } else null
+        DashcamLog.add("nối '$ssid', Wi‑Fi hệ thống='${systemSsid(ctx)}', hỗ trợ 2 Wi‑Fi=$conc, mạng: ${DashcamLog.networks(ctx)}")
         if (systemSsid(ctx) == ssid) {
+            DashcamLog.add("máy đã nối sẵn cam trong Cài đặt, dùng luôn")
             release(ctx)
             current(ctx)?.let { onResult(it); return }
         }
@@ -77,11 +116,12 @@ object DashcamWifi {
         var done = false
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(n: Network) {
+                DashcamLog.add("Wi‑Fi cam riêng của app đã có: $n")
                 network = n
                 if (!done) { done = true; onResult(n) }
             }
-            override fun onUnavailable() { if (!done) { done = true; onResult(null) } }
-            override fun onLost(n: Network) { if (network == n) network = null }
+            override fun onUnavailable() { DashcamLog.add("Android không nối được Wi‑Fi cam (huỷ / sai mật khẩu / hết giờ)"); if (!done) { done = true; onResult(null) } }
+            override fun onLost(n: Network) { DashcamLog.add("mất Wi‑Fi cam $n"); if (network == n) network = null }
         }
         callback = cb
         try { cm.requestNetwork(req, cb, 60_000) } catch (e: Throwable) {
@@ -96,7 +136,8 @@ object DashcamWifi {
         val ssid = p.getString("camSsid", null) ?: return
         // Máy đã tự nối Wi‑Fi cam trong Cài đặt Android thì dùng luôn: xin thêm mạng riêng sẽ chiếm suất
         // "Wi‑Fi phụ" mà Android Auto không dây đang dùng, làm rớt Android Auto
-        if (systemSsid(ctx) == ssid) return
+        if (systemSsid(ctx) == ssid) { DashcamLog.add("tự nối lại: máy đã nối '$ssid' trong Cài đặt"); return }
+        DashcamLog.add("tự nối lại Wi‑Fi cam '$ssid'")
         val pass = p.getString("camPass", DEFAULT_PASS) ?: DEFAULT_PASS
         val latch = CountDownLatch(1)
         connect(ctx, ssid, pass) { latch.countDown() }
@@ -128,7 +169,12 @@ object DashcamWifi {
             out += wifi
         } catch (_: Throwable) {}
         out += null
-        return out.distinct()
+        val r = out.distinct()
+        try {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            DashcamLog.add("mạng thử tới $host: " + r.joinToString(" > ") { DashcamLog.describe(cm, it) })
+        } catch (_: Throwable) {}
+        return r
     }
 
     fun current(ctx: Context): Network? = network ?: try {

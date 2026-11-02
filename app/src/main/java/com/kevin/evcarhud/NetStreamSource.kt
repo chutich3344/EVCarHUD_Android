@@ -104,7 +104,7 @@ class NetStreamSource(
                 n?.bindSocket(s)
                 s.connect(InetSocketAddress(host, port), if (nets.size > 1) 2500 else CONNECT_MS)
             } catch (e: Throwable) {
-                Log.w(NTAG, "không tới được $host:$port qua $n", e)
+                DashcamLog.add("không tới được $host:$port qua $n: ${e.javaClass.simpleName} ${e.message}")
                 try { s.close() } catch (_: Throwable) {}
                 continue
             }
@@ -112,6 +112,7 @@ class NetStreamSource(
             s.tcpNoDelay = true
             socket = s
             boundNet = n
+            DashcamLog.add("đã kết nối $host:$port qua $n")
             return s
         }
         throw IllegalStateException("Không kết nối được $host:$port (đã nối Wi‑Fi của camera chưa?)")
