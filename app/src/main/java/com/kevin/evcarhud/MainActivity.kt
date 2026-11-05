@@ -219,13 +219,17 @@ class Runner(private val ctx: Context) {
         else -> "HERE chưa có dữ liệu ở đoạn này"
     }
 
-    // Âm báo: 0 = tiếng tít, 1 = giọng đọc tiếng Việt (máy chưa có giọng Việt thì tự dùng tiếng tít)
-    var alertSound by mutableStateOf(prefs.getInt("alertSound", 0).coerceIn(0, 1))
+    // Âm báo: 0 = tiếng tít, 1 = giọng đọc tiếng Việt (máy chưa có giọng Việt thì tự dùng tiếng tít), 2 = tắt hẳn (chỉ cảnh báo bằng hình)
+    var alertSound by mutableStateOf(prefs.getInt("alertSound", 0).coerceIn(0, 2))
+    // Waze / VietMap đã đọc hướng rẽ và giới hạn tốc độ: mặc định không đọc lại để khỏi trùng
+    var voiceTurn by mutableStateOf(prefs.getBoolean("voiceTurn", false))
+    var voiceOver by mutableStateOf(prefs.getBoolean("voiceOver", false))
     val voice = AlertVoice(ctx)
     private fun useVoice() = alertSound == 1 && voice.ready
+    private fun soundOn() = alertSound != 2
     fun testSound() {
         if (alertSound == 1 && voice.ready) { voice.volume = beepVolume / 100f; voice.say("Giữ khoảng cách", urgent = true, minGapMs = 0L) }
-        else testBeep()
+        else if (soundOn()) testBeep()
     }
     // Ảnh quanh mỗi lần cảnh báo (xem lại, đánh dấu đúng / nhầm) + thu ảnh huấn luyện
     val clips = AlertClips(ctx)
@@ -274,7 +278,7 @@ class Runner(private val ctx: Context) {
         prefs.edit().putFloat("hoodCut", hoodCut).putInt("camKind", camKind.ordinal).putString("streamUrl", streamUrl)
             .putBoolean("alertLog", logOn).putBoolean("limitGuess", limitGuess)
             .putInt("roadMode", roadMode).putBoolean("autoCal", autoCal).putFloat("horizon", horizon)
-            .putInt("alertSound", alertSound).putBoolean("collect", collectData).putString("hereKey", hereKey.trim())
+            .putInt("alertSound", alertSound).putBoolean("voiceTurn", voiceTurn).putBoolean("voiceOver", voiceOver).putBoolean("collect", collectData).putString("hereKey", hereKey.trim())
             .putFloat("camH", camH).putBoolean("reflect", reflect)
             .putInt("navVehicle", navVehicle).putBoolean("miniMap", miniMap)
             .putFloat("coolTarget", coolTarget).putBoolean("gpuPreview", gpuPreview).apply()
@@ -596,7 +600,7 @@ class Runner(private val ctx: Context) {
                             hotSaid = c
                             val t = if (ti.plugged) "Máy đang nóng, hãy bật điều hoà hướng vào điện thoại và dùng sạc chậm"
                                     else "Máy đang nóng, hãy bật điều hoà hướng vào điện thoại"
-                            if (alertSound == 1 && voice.ready) voice.say(t, minGapMs = 0L) else beeper?.chime()
+                            if (alertSound == 1 && voice.ready) voice.say(t, minGapMs = 0L) else if (soundOn()) beeper?.chime()
                         }
                         // Nhật ký nhiệt: mỗi 10 s một dòng CSV (xem Cài đặt › Thông tin › Nhật ký nhiệt)
                         if (c - lastTLog >= 10_000L) {
@@ -615,7 +619,7 @@ class Runner(private val ctx: Context) {
                             coolNote = "Pin %.1f°C, Android báo %s".format(ti.batteryC, ThermalMonitor.statusName(ti.status))
                             Log.w(TAG, "tạm nghỉ làm mát: $coolNote")
                             if (alertSound == 1 && voice.ready) voice.say("Máy quá nóng, tạm dừng cảnh báo để làm mát", urgent = true, minGapMs = 0L)
-                            else beeper?.chime()
+                            else if (soundOn()) beeper?.chime()
                         } else if (coolPause && (cooled || !thermalAuto)) {
                             coolPause = false
                             Log.w(TAG, "hết tạm nghỉ làm mát")
@@ -824,19 +828,19 @@ class Runner(private val ctx: Context) {
             }
             // Chỉ đường: đọc hướng rẽ (giọng đọc), hoặc hai tiếng nhẹ ngay trước chỗ rẽ (tiếng tít)
             nav.consumeCue()?.let { c ->
-                if (useVoice()) { voice.volume = beepVolume / 100f; voice.say(c.text, urgent = false, minGapMs = 3000L) }
-                else if (c.near) beeper.chime()
+                if (useVoice()) { if (voiceTurn) { voice.volume = beepVolume / 100f; voice.say(c.text, urgent = false, minGapMs = 3000L) } }
+                else if (c.near && soundOn()) beeper.chime()
             }
             // Xe trước đã chạy (đang đứng chờ)
             if (HudRenderer.consumeLeadMoved()) {
-                if (useVoice()) voice.say("Xe trước đã chạy", minGapMs = 10_000L) else beeper.chime()
+                if (useVoice()) voice.say("Xe trước đã chạy", minGapMs = 10_000L) else if (soundOn()) beeper.chime()
             }
             // Vượt giới hạn tốc độ hơn 5 km/h liên tục 3 s: nhắc một lần, tối đa 30 s một lần
             if (limitNow > 0 && logSpd > limitNow + 5f) {
                 if (overSince < 0L) overSince = nowMs
                 if (nowMs - overSince > 3000L && nowMs - overSaid > 30_000L) {
                     overSaid = nowMs
-                    if (useVoice()) voice.say("Vượt tốc độ, giới hạn $limitNow", minGapMs = 30_000L) else beeper.chime()
+                    if (useVoice()) { if (voiceOver) voice.say("Vượt tốc độ, giới hạn $limitNow", minGapMs = 30_000L) } else if (soundOn()) beeper.chime()
                 }
             } else overSince = -1L
             // Đứng yên hơn 3 s: giảm tải
@@ -871,7 +875,7 @@ class Runner(private val ctx: Context) {
             shown++
             val flashOn = alert && ((job.ptsUs / 150_000L) % 2L == 0L)
             if (alertFlash != flashOn) alertFlash = flashOn
-            if (alert && !useVoice()) beeper.beep()
+            if (alert && !useVoice() && soundOn()) beeper.beep()
 
             val t = SystemClock.elapsedRealtime()
             if (t - lastStatus >= STATUS_MS) {
@@ -1324,14 +1328,24 @@ private fun BoxScope.SettingsPanel(runner: Runner, land: Boolean, onPick: () -> 
             SwitchRow("Cảnh báo va chạm", "Âm báo và viền đỏ khi sắp va chạm; viền vàng khi cần chú ý.", runner.warnOn) { runner.warnOn = it }
             RowLine(); Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
                 RowTitle("Âm báo")
-                Segmented(listOf("Tiếng tít", "Giọng đọc"), runner.alertSound) { runner.alertSound = it; runner.savePrefs() }
+                Segmented(listOf("Tiếng tít", "Giọng đọc", "Tắt"), runner.alertSound) { runner.alertSound = it; runner.savePrefs() }
                 Desc(
-                    if (runner.alertSound == 1)
-                        "Đọc câu ngắn: \"Phanh! Xe phía trước\", \"Giữ khoảng cách\", \"Xe cắt đầu bên phải\", \"Xe trước đã chạy\", \"Vượt tốc độ\". " +
-                        "Trạng thái: ${runner.voice.note}."
-                    else "Tít liên tục khi nguy hiểm; hai tiếng nhẹ khi xe trước đã chạy hoặc vượt tốc độ.",
+                    when (runner.alertSound) {
+                        1 -> "Đọc câu ngắn: \"Phanh! Xe phía trước\", \"Giữ khoảng cách\", \"Xe cắt đầu bên phải\", \"Xe trước đã chạy\". " +
+                            "Trạng thái: ${runner.voice.note}."
+                        2 -> "Không phát tiếng nào; cảnh báo chỉ hiện bằng viền màu trên màn hình và HUD. Hợp khi Waze / VietMap đã đọc."
+                        else -> "Tít liên tục khi nguy hiểm; hai tiếng nhẹ khi xe trước đã chạy hoặc vượt tốc độ."
+                    },
                     top = 6
                 )
+            }
+            if (runner.alertSound == 1) {
+                RowLine(); SwitchRow("Đọc hướng rẽ", "Tắt nếu Waze / VietMap đang đọc chỉ đường, để khỏi nghe hai lần.", runner.voiceTurn) {
+                    runner.voiceTurn = it; runner.savePrefs()
+                }
+                RowLine(); SwitchRow("Đọc vượt tốc độ", "\"Vượt tốc độ, giới hạn 50\". Tắt nếu Waze / VietMap đã cảnh báo tốc độ.", runner.voiceOver) {
+                    runner.voiceOver = it; runner.savePrefs()
+                }
             }
             RowLine(); SliderRow("Âm lượng cảnh báo", "${runner.beepVolume.roundToInt()}%", runner.beepVolume, 10f..100f,
                 "10%", "100%", "Tương đối so với âm lượng phương tiện của máy.",
